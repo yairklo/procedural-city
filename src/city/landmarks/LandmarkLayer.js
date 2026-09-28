@@ -28,6 +28,8 @@ import { Mesher, STYLE, resample, ringCenter, ringRadius, signedArea } from './g
 import { createLandmarkMaterial } from './materials.js';
 import { decomposeFootprint, pointInRings, distanceToEdges, orientedBox } from '../footprint.js';
 import { buildHaram } from './haram.js';
+import { buildModern } from './modern.js';
+import { buildHills } from './hills.js';
 
 const COLOR = {
   wall: 0xd6ccb8, // Jerusalem limestone: cream with a hint of pink, not yellow
@@ -786,6 +788,19 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
   if (data.haram) {
     stats.haram = buildHaram(data.haram, { project, at, ground, patches: terrain.patches, addBox, addFootprint, quadBox, finish });
   }
+
+  // --- the Knesset and the Chords Bridge -------------------------------------------------------------
+  if (data.modern) stats.modern = buildModern(data, { project, at, ground, addBox, addFootprint, quadBox, finish });
+
+  // --- the Mount of Olives and Mount Scopus -----------------------------------------------------------
+  const addObject = (obj) => {
+    obj.castShadow = obj.castShadow ?? true;
+    group.add(obj);
+    stats.meshes++;
+    const tris = (obj.geometry.index ? obj.geometry.index.count : obj.geometry.getAttribute('position').count) / 3;
+    stats.triangles += tris * (obj.isInstancedMesh ? obj.count : 1);
+  };
+  if (data.olives || data.scopus) stats.hills = buildHills(data, { project, at, ground, addBox, addFootprint, quadBox, finish, addObject, material });
 
   return {
     group,

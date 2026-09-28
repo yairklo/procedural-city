@@ -17,6 +17,13 @@
 //                the Dome of the Chain, the arcades (qanatir) at the top of the stairs, the small
 //                domes, the groves, the minarets, the raised platform around the Dome of the
 //                Rock (from the arcades that stand on its edge) and the mapped trees
+//   modern       the Knesset (outline) and its Menorah, the Chords Bridge (deck line, pylon)
+//   olives       the Mount of Olives: the Jewish cemetery, the Church of Mary Magdalene, the
+//                Church of All Nations, Absalom's Tomb, the Tomb of Zechariah, the Russian
+//                bell tower, the Chapel of the Ascension, the Seven Arches Hotel
+//   scopus       Mount Scopus: the Hebrew University tower and campus, Augusta Victoria
+//                Where OSM (or the tiles) has no geometry for one of these, an approximate
+//                position is used and flagged `approximate`.
 //   patches      terrain patches: the raised platform, the esplanade and the plaza as flat
 //                surfaces (the raised platform first: the first patch containing a point wins)
 //   replaces     OSM building ids the landmark models replace (not generated again)
@@ -79,6 +86,11 @@ const CITY_GATES = {
 };
 
 const round = (v) => Math.round(v * 1e7) / 1e7;
+const areaM2 = (r) => {
+  let a = 0;
+  for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) a += (r[j + 1] * r[i] - r[i + 1] * r[j]) * 110900 * 94600;
+  return Math.abs(a / 2);
+};
 const flat = (geometry) => geometry.flatMap((p) => [round(p.lat), round(p.lon)]);
 const openRing = (pts) => (pts.length >= 4 && pts[0] === pts[pts.length - 2] && pts[1] === pts[pts.length - 1] ? pts.slice(0, -2) : pts);
 const centroid = (pts) => {
@@ -178,6 +190,127 @@ export function extractHaram(features, nodes, enclosure, trees = []) {
 /** The raised-platform terrain patch for `haram` (goes first in the patch list). */
 export const upperPlatformPatch = (haram) =>
   haram?.upperPlatform ? { name: 'Dome of the Rock platform', mode: 'raise', elevation: ELEVATION.upperPlatform, rings: [haram.upperPlatform.ring] } : null;
+
+// Small areas around the landmarks outside the Old City (fetched as well, for their outlines).
+export const EXTRA_BBOXES = Object.freeze([
+  { name: 'Knesset', south: 31.7745, west: 35.2030, north: 31.7790, east: 35.2095 },
+  { name: 'Chords Bridge', south: 31.7860, west: 35.1990, north: 31.7905, east: 35.2060 },
+  { name: 'Mount of Olives', south: 31.7730, west: 35.2380, north: 31.7815, east: 35.2480 },
+  { name: 'Mount Scopus', south: 31.7840, west: 35.2400, north: 31.7960, east: 35.2490 },
+]);
+
+// Approximate positions (lat, lon) for what is not mapped, or not in the data at hand.
+// `crest`: a tower on a ridge, placed on the highest ground within 40 m of the position.
+export const APPROX = Object.freeze({
+  menorah: { lat: 31.776, lon: 35.207 },
+  // The light-rail bridge: from Jaffa Road by the Central Bus Station (east, at street level)
+  // curving south-west over the Herzl / Shazar junction to Herzl Boulevard.
+  chordsBridge: {
+    deck: [31.78945, 35.20455, 31.7892, 35.2037, 31.78895, 35.2029, 31.78862, 35.20215, 31.78818, 35.2015, 31.78765, 35.201],
+    pylon: { lat: 31.78878, lon: 35.2032 },
+  },
+  cemetery: [31.7792, 35.2398, 31.7792, 35.2432, 31.7779, 35.2447, 31.7756, 35.2446, 31.7743, 35.2432, 31.7743, 35.24, 31.7760, 35.2393],
+  bellTower: { lat: 31.7792, lon: 35.2455, crest: true },
+  chapelAscension: { lat: 31.7788, lon: 35.2448, crest: true },
+  sevenArches: { lat: 31.7768, lon: 35.2446, crest: true },
+  universityTower: { lat: 31.7927, lon: 35.2435, crest: true },
+  augustaVictoria: { lat: 31.7858, lon: 35.2449, crest: true },
+});
+
+/**
+ * The junction under the Chords Bridge as a terrain patch: SRTM measures the surface with
+ * the buildings on it (the Central Bus Station), which puts a 830 m hump where the roads
+ * below the bridge run at ~813 m. A band 45 m either side of the middle of the deck, blending
+ * back to the DEM over 50 m.
+ */
+export function bridgeJunctionPatch(deck, { from = 0.15, to = 0.85, half = 45, elevation = 813 } = {}) {
+  const lat0 = deck[0], kx = 111320 * Math.cos((lat0 * Math.PI) / 180), kz = 110900;
+  const pts = [];
+  for (let i = 0; i < deck.length; i += 2) pts.push([deck[i + 1] * kx, deck[i] * kz]);
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const L = cum[cum.length - 1];
+  const at = (d) => {
+    let i = 1;
+    while (i < pts.length - 1 && cum[i] < d) i++;
+    const t = (d - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+    const a = pts[i - 1], b = pts[i];
+    const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1;
+    return { x: a[0] + dx * t, z: a[1] + dz * t, nx: -dz / l, nz: dx / l };
+  };
+  const left = [], right = [];
+  for (let k = 0; k <= 12; k++) {
+    const p = at(L * (from + ((to - from) * k) / 12));
+    left.push([p.x + p.nx * half, p.z + p.nz * half]);
+    right.push([p.x - p.nx * half, p.z - p.nz * half]);
+  }
+  const ring = [...left, ...right.reverse()].flatMap(([x, z]) => [round(z / kz), round(x / kx)]);
+  return { name: 'Chords Bridge junction', mode: 'lower', elevation, falloff: 50, approximate: true, rings: [ring] };
+}
+
+/**
+ * The Knesset, the Chords Bridge and the hills east of the Old City, from generic features
+ * (OSM ways or tile buildings) and nodes; approximate positions fill the gaps.
+ */
+export function extractModern(features, nodes = []) {
+  const nameOf = (f) => `${f.tags['name:en'] ?? ''}|${f.tags.name ?? ''}|${f.tags['name:he'] ?? ''}`;
+  const find = (re, pred = (f) => !!f.tags.building) => features.find((f) => pred(f) && re.test(nameOf(f)));
+  const node = (re) => nodes.find((n) => re.test(nameOf(n)));
+  const at = (p, fallback) => (p ? { lat: round(p.lat), lon: round(p.lon), approximate: false } : { ...fallback, approximate: true });
+  const outline = (f) => f && { id: f.id, name: f.tags['name:en'] ?? f.tags.name ?? null, ring: f.ring };
+  const replaces = [];
+
+  const knesset = find(/^Knesset\||משכן הכנסת/);
+  // The Knesset's office wings: big unnamed buildings right next to it (within 30 m).
+  const near = (f, g, d) => {
+    for (let i = 0; i < f.ring.length; i += 2) {
+      for (let j = 0; j < g.ring.length; j += 2) {
+        if (Math.hypot((f.ring[i] - g.ring[j]) * 110900, (f.ring[i + 1] - g.ring[j + 1]) * 94600) < d) return true;
+      }
+    }
+    return false;
+  };
+  const wings = knesset ? features.filter((f) => f !== knesset && f.tags.building && !f.tags.name && f.ring.length >= 8 && near(f, knesset, 30) && areaM2(f.ring) > 1500) : [];
+  const menorahNode = node(/Knesset Menorah|מנורת הכנסת/);
+  // The bridge: a mapped light-rail way named for it gives the deck line.
+  const bridgeWay = features.find((f) => /Chords Bridge|Bridge of Strings|גשר המיתרים/.test(nameOf(f)) && f.line);
+  const deck = bridgeWay ? bridgeWay.line.map(round) : [...APPROX.chordsBridge.deck];
+  const pylonNode = node(/Chords Bridge|גשר המיתרים/);
+
+  const church = (re) => outline(find(re));
+  // Mapped buildings inside the cemetery's (approximate) outline: no graves there.
+  const cem = APPROX.cemetery;
+  const inCem = features.filter((f) => f.tags.building && f.ring.length >= 6 && inRing(cem, centroid(f.ring).lat, centroid(f.ring).lon)).map((f) => f.ring);
+  const olives = {
+    cemetery: { ring: [...cem], approximate: true, exclude: inCem },
+    maryMagdalene: church(/Church of Mary Magdalene/),
+    allNations: church(/Church of All Nations/),
+    absalom: church(/Tomb of Absalom|יד אבשלום/),
+    zechariah: church(/Tomb of Zacharias|Tomb of Zechariah|קבר זכריה/),
+    bellTower: at(node(/Russian Church of the Ascension|Ascension Bell Tower/), APPROX.bellTower),
+    chapelAscension: at(null, APPROX.chapelAscension),
+    sevenArches: at(node(/Seven Arches/), APPROX.sevenArches),
+  };
+  const chapel = find(/Chapel of the Ascension/);
+  if (chapel) olives.chapelAscension = { ...at(centroid(chapel.ring)), crest: false };
+  const scopus = {
+    universityTower: at(node(/Hebrew University.*Tower|מגדל האוניברסיטה/), APPROX.universityTower),
+    augustaVictoria: at(node(/Augusta Victoria/), APPROX.augustaVictoria),
+  };
+  for (const k of ['maryMagdalene', 'allNations', 'absalom', 'zechariah']) if (olives[k]) replaces.push(olives[k].id);
+  if (knesset) replaces.push(knesset.id, ...wings.map((w) => w.id));
+  return {
+    modern: {
+      knesset: outline(knesset),
+      knessetWings: wings.map((w) => ({ id: w.id, ring: w.ring, holes: w.holes ?? [] })),
+      menorah: at(menorahNode, APPROX.menorah),
+      chordsBridge: { deck, pylon: at(pylonNode, APPROX.chordsBridge.pylon), approximate: !bridgeWay },
+    },
+    olives,
+    scopus,
+    replaces,
+  };
+}
 
 /** Extracts the landmark data from merged OSM data (see osm_api.js). */
 export function extractLandmarks(osm) {
@@ -316,6 +449,7 @@ export function extractLandmarks(osm) {
 
   const patches = [];
   let haram = null;
+  let modern = null;
   if (tm) {
     const features = ways
       .filter((w) => w.refs.length >= 4 && w.refs[0] === w.refs[w.refs.length - 1])
@@ -323,11 +457,15 @@ export function extractLandmarks(osm) {
     const trees = nodes.filter((n) => n.tags.natural === 'tree').flatMap((n) => [n.lat, n.lon]);
     const nodeList = nodes.filter((n) => Object.keys(n.tags).length).map((n) => ({ id: `n${n.id}`, tags: n.tags, lat: n.lat, lon: n.lon }));
     const h = extractHaram(features, nodeList, relRings(tm, 'outer')[0], trees);
+    const lines = ways.filter((w) => w.tags.bridge === 'yes' && (w.tags.railway || w.tags.highway)).map((w) => ({ id: `w${w.id}`, tags: w.tags, ring: [], line: wayPts(w) }));
+    modern = extractModern([...features, ...lines], nodeList);
+    replaces.push(...modern.replaces);
     haram = h.haram;
     replaces.push(...h.replaces);
     const up = upperPlatformPatch(haram);
     if (up) patches.push(up);
   }
+  if (modern?.modern.chordsBridge) patches.push(bridgeJunctionPatch(modern.modern.chordsBridge.deck));
   // Outer outline only: the relation's inner ring (the Marwani mosque garden) is excluded from
   // the land use, but physically it lies on the esplanade too.
   if (tm) patches.push({ name: 'Temple Mount esplanade', mode: 'raise', elevation: ELEVATION.esplanade, rings: relRings(tm, 'outer') });
@@ -357,6 +495,9 @@ export function extractLandmarks(osm) {
     citadel,
     sepulchre,
     haram,
+    modern: modern?.modern ?? null,
+    olives: modern?.olives ?? null,
+    scopus: modern?.scopus ?? null,
     patches,
     replaces: [...new Set(replaces)],
   };
@@ -372,15 +513,23 @@ async function fromTiles() {
   const seen = new Set();
   for (const file of (await readdir(dir)).filter((f) => /^osm_.*\.json$/.test(f))) {
     const t = JSON.parse(await readFile(resolve(dir, file), 'utf8'));
-    for (const b of t.buildings ?? []) if (!seen.has(b.id) && b.rings?.[0]) { seen.add(b.id); features.push({ id: b.id, tags: b.tags ?? {}, ring: openRing(b.rings[0]) }); }
+    for (const b of t.buildings ?? []) if (!seen.has(b.id) && b.rings?.[0]) { seen.add(b.id); features.push({ id: b.id, tags: b.tags ?? {}, ring: openRing(b.rings[0]), holes: b.rings.slice(1).map(openRing) }); }
     for (const p of t.parks ?? []) if (!seen.has(p.id) && p.rings?.[0]) { seen.add(p.id); features.push({ id: p.id, tags: { leisure: p.kind, ...(p.name ? { name: p.name } : {}) }, ring: openRing(p.rings[0]) }); }
     if (Array.isArray(t.trees)) trees.push(...t.trees);
   }
   const { haram, replaces } = extractHaram(features, [], data.templeMount.outer[0], trees);
+  const modern = extractModern(features);
+  const oldModern = new Set([data.modern?.knesset?.id, ...(data.modern?.knessetWings ?? []).map((w) => w.id), ...['maryMagdalene', 'allNations', 'absalom', 'zechariah'].map((k) => data.olives?.[k]?.id)]);
+  data.modern = modern.modern;
+  data.olives = modern.olives;
+  data.scopus = modern.scopus;
+  replaces.push(...modern.replaces);
   const old = new Set([data.haram?.domeOfTheRock?.id, data.haram?.aqsa?.id, data.haram?.domeOfTheChain?.id, ...(data.haram?.arcades ?? []).map((a) => a.id), ...(data.haram?.domes ?? []).map((d) => d.id)]);
   data.haram = haram;
   data.lowRise = LOW_RISE_AREAS.map((a) => ({ ...a, ring: [...a.ring] }));
-  data.replaces = [...new Set([...data.replaces.filter((id) => !old.has(id)), ...replaces])];
+  data.patches = data.patches.filter((p) => p.name !== 'Chords Bridge junction');
+  data.patches.push(bridgeJunctionPatch(data.modern.chordsBridge.deck));
+  data.replaces = [...new Set([...data.replaces.filter((id) => !old.has(id) && !oldModern.has(id)), ...replaces])];
   data.patches = data.patches.filter((p) => p.name !== 'Dome of the Rock platform');
   const up = upperPlatformPatch(haram);
   if (up) data.patches.unshift(up);
@@ -403,6 +552,10 @@ async function main() {
       }));
       process.stdout.write(`\r[landmarks] ${docs.length}/${rows * cols} areas`);
     }
+  }
+  for (const b of EXTRA_BBOXES) {
+    docs.push(await fetchOsmMap(b));
+    process.stdout.write(`\r[landmarks] ${b.name}          `);
   }
   process.stdout.write('\n');
   const data = extractLandmarks(mergeOsm(docs));

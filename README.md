@@ -209,6 +209,58 @@ The three new materials (glazed tiles, gold leaf and marble panels) are styles o
 shared landmark shader (`materials.js`), so the whole compound is a single mesh. On the
 esplanade, buildings without a mapped height are built at one storey with no shopfronts.
 
+### The Knesset, the Chords Bridge, the Mount of Olives and Mount Scopus
+
+These are also in `landmarks.json` (`modern`, `olives`, `scopus`), built by
+`src/city/landmarks/modern.js` and `hills.js` with the shared kit (`kit.js`: arches,
+arcades, windows, domes, finials, tubes).
+
+- The Knesset (the mapped outline, OSM w551414758):
+  - a stone podium that levels the hilltop;
+  - a colonnade of tall square stone piers on all four sides, carrying a deep flat roof slab;
+  - the stone core with vertical slit windows and a glazed ground floor;
+  - the plenum hall's lantern with its low pleated roof;
+  - a broad entrance stair with flag poles (Israeli flags, the Star of David as an outline);
+  - the bronze Knesset Menorah facing the building (seven branches, three pairs of arms as
+    half-circles);
+  - the office wing next to it (a relation with courtyards), low and built into the slope,
+    with window bands.
+- The Chords Bridge:
+  - a 400 m curved deck with a tram lane and rails, glass-railed walkways and a white box
+    girder on slender piers;
+  - the deck rises 7 m over the junction and meets the street at both ends, and it is
+    walkable end to end (1 m collision pieces);
+  - the 118 m pylon leans 24 degrees back from the span and tapers, with a slight bow;
+  - 66 cables fan from its upper half to the deck edge, and the curve of the deck twists them
+    into a harp.
+
+  SRTM measures the surface with buildings (the Central Bus Station), so the junction under
+  the bridge is a lowered terrain patch at 813 m, like the Western Wall plaza.
+- The Mount of Olives:
+  - the Jewish cemetery: ~29,000 limestone slabs in rows along the contours, long axis down
+    the slope toward the Temple Mount. They form one instanced mesh that receives shadows
+    but casts none, and they skip the mapped buildings on the slope;
+  - the Church of Mary Magdalene with seven gilded onion domes;
+  - the Church of All Nations, with its portico, gold mosaic pediment and twelve domes;
+  - Absalom's Tomb (cube, drum and concave "hat") and the Tomb of Zechariah (pyramid);
+  - the Russian bell tower of the Ascension, the Chapel of the Ascension in its court, and
+    the Seven Arches Hotel.
+- Mount Scopus: the Hebrew University tower with campus blocks, and Augusta Victoria (the
+  church and its bell tower).
+
+The Knesset, Mary Magdalene, All Nations and the two tombs have their outlines from the
+map. The bridge line, the pylon, the Menorah, the cemetery outline and the ridge towers are
+approximate positions (`approximate: true`). Ridge towers are placed on the highest ground
+within 40 m, and the campus blocks are procedural. When the OSM API is reachable, the full
+`node scripts/fetch_landmarks.js` also downloads small areas around each landmark
+(`EXTRA_BBOXES`) and takes mapped geometry by name where it exists.
+
+The terrain now extends beyond the tiles, to Mount Scopus, the Chords Bridge and the
+Mount of Olives ridge (`dem_points.json`, SRTM 30 m:
+`node scripts/fetch_elevation.js --mode points --source terrarium --bbox 31.765,35.196,31.798,35.256`).
+Inside the old area the heights are unchanged, and the datum is the same. The coarse
+surroundings mesh has skirts, so steep real terrain at the world edge leaves no cracks.
+
 Around the walls, a few rules keep the generic buildings believable:
 
 - A footprint that straddles a platform's retaining wall no longer takes its floor from the

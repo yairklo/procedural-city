@@ -278,7 +278,7 @@ export class TileWorld {
       { minX: b.minX - r, maxX: b.maxX + r, minZ: b.maxZ, maxZ: b.maxZ + r },
       { minX: b.minX - r, maxX: b.minX, minZ: b.minZ, maxZ: b.maxZ },
       { minX: b.maxX, maxX: b.maxX + r, minZ: b.minZ, maxZ: b.maxZ },
-    ].map((rect) => terrainGeometry(t, rect, 48, -0.3));
+    ].map((rect) => terrainGeometry(t, rect, 48, -0.3, 12)); // skirts: no cracks against the cells' finer grids on steep ground
     const surround = new THREE.Mesh(mergeGeometries(strips, false), this.outerMaterial);
     for (const g of strips) g.dispose();
     surround.name = 'TerrainSurroundings';
