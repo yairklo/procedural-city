@@ -49,7 +49,16 @@ export class WorkerCellBackend {
       for (const p of this.pending.values()) p.reject(new Error(event.message || 'cell worker failed'));
       this.pending.clear();
     };
-    this.ready = this._call({ type: 'init', worldBBox: world.manifest.worldBBox, dem: world.dem, cityOptions: world.o.city, seed: world.o.seed });
+    // If the worker can't start (script blocked or failing to load, init error), build on the
+    // main thread instead of leaving every cell empty. Decided once, before any cell is
+    // generated, so all cell data comes from one backend.
+    this.local = null;
+    this.ready = this._call({ type: 'init', worldBBox: world.manifest.worldBBox, dem: world.dem, cityOptions: world.o.city, seed: world.o.seed })
+      .catch((err) => {
+        console.error(`[world] cell worker failed to start (${err.message}); building cells on the main thread instead`);
+        this.worker.terminate();
+        this.local = new LocalCellBackend(world);
+      });
   }
 
   _call(message, transfer) {
@@ -62,6 +71,7 @@ export class WorkerCellBackend {
 
   async generate(cell) {
     await this.ready;
+    if (this.local) return this.local.generate(cell);
     const message = { type: 'generate', cellId: cell.id };
     if (cell.source === 'tile') message.url = this.tileUrl(cell.tile.file);
     else if (cell.legacyOsm) message.osm = cell.legacyOsm;
@@ -71,6 +81,7 @@ export class WorkerCellBackend {
 
   async build(cell, level) {
     await this.ready;
+    if (this.local) return this.local.build(cell, level);
     const { parts } = await this._call({ type: 'build', cellId: cell.id, level });
     return unpackChunkParts(parts);
   }
