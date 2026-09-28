@@ -77,6 +77,12 @@ function makeWorld({ tiles = [], legacy = false, failing = [], options = {}, sou
   return world;
 }
 
+/** The TileWorld constructor arguments makeWorld would use (for custom backends). */
+function makeWorldArgs(opts) {
+  const w = makeWorld(opts);
+  return { manifest: w.manifest, dem: DEM, legacy: opts.legacy ? (opts.source ?? FULL) : null, loadTile: w.loadTile, options: opts.options ?? {} };
+}
+
 const center = (cell) => ({ x: (cell.rect.minX + cell.rect.maxX) / 2, z: (cell.rect.minZ + cell.rect.maxZ) / 2 });
 const EVERYTHING_NEAR = { nearDistance: 1e5 };
 
@@ -275,4 +281,60 @@ test('ownership: a legacy road crossing into a tile cell is cut on the border, n
   const w0 = makeWorld({ legacy: true, source: legacy });
   assert.deepEqual(w0.cells.get('0_0').legacyOsm.roads[0].points, west);
   assert.deepEqual(w0.cells.get('1_0').legacyOsm.roads[0].points, east);
+});
+
+// --- Worker path and merged terrain --------------------------------------------------------------
+
+import { chunkLookup, buildChunkParts, packChunkParts, unpackChunkParts } from '../src/city/CityGenerator.js';
+
+/** A backend that behaves like WorkerCellBackend: data and geometry cross a structured clone. */
+function cloneBackend(world) {
+  const chunks = new Map();
+  return {
+    async generate(cell) {
+      const osm = cell.source === 'tile' ? await world.loadTile(cell.tile.file) : cell.legacyOsm;
+      if (!osm) return null;
+      const chunk = world.generateCell(cell, structuredClone(osm));
+      chunks.set(cell.id, chunk);
+      return structuredClone(chunkLookup(chunk));
+    },
+    async build(cell, level) {
+      const { parts } = packChunkParts(buildChunkParts(chunks.get(cell.id), { terrain: world.terrain, level }));
+      return unpackChunkParts(structuredClone(parts));
+    },
+  };
+}
+
+test('worker path: light lookup data + transferred geometry give the same world', async () => {
+  const opts = { tiles: ['0_0', '1_0'], legacy: true, options: EVERYTHING_NEAR };
+  const local = makeWorld(opts);
+  const viaClone = new TileWorld({ ...makeWorldArgs(opts), backend: cloneBackend });
+  const s1 = await local.findSpawn(), s2 = await viaClone.findSpawn();
+  assert.deepEqual(s2, s1, 'same spawn');
+  await local.settle({ x: 0, z: 0 });
+  await viaClone.settle({ x: 0, z: 0 });
+  assert.equal(viaClone.collision.count, local.collision.count, 'same colliders');
+  assert.deepEqual(viaClone.findRoadsAt(s1.x, s1.z).map((r) => r.id), local.findRoadsAt(s1.x, s1.z).map((r) => r.id));
+  const tris = (w) => {
+    let n = 0;
+    w.group.traverse((o) => { if (o.isMesh && o.parent?.name?.startsWith('Chunk')) n += (o.geometry.index?.count ?? o.geometry.getAttribute('position').count) / 3 * (o.isInstancedMesh ? o.count : 1); });
+    return n;
+  };
+  assert.ok(tris(local) > 0);
+  assert.equal(tris(viaClone), tris(local), 'same geometry');
+  const b = viaClone.cells.get('1_0').data.buildings[0];
+  assert.equal(viaClone.buildingById(b.id).heightSource, local.buildingById(b.id).heightSource);
+});
+
+test('terrain: far and unloaded cells share one merged mesh; near and medium get their own', async () => {
+  const world = makeWorld({ tiles: ['0_0'], options: { nearDistance: 150, mediumDistance: 450, farDistance: 700, hysteresis: 50 } });
+  await world.settle(center(world.cells.get('0_0')));
+  const own = world.groundGroup.children.filter((o) => o.name.startsWith('Terrain['));
+  const fine = [...world.cells.values()].filter((c) => c.level === 'near' || c.level === 'medium');
+  assert.equal(own.length, fine.length, 'one mesh per near / medium cell');
+  assert.ok(fine.length < world.cells.size, 'some cells are far / unloaded');
+  assert.ok(world.farGround.visible && world.farGround.geometry.getAttribute('position').count > 0, 'merged coarse mesh');
+  // Everything far: a single merged terrain mesh.
+  await world.settle({ x: 1e5, z: 1e5 });
+  assert.equal(world.groundGroup.children.filter((o) => o.name.startsWith('Terrain[')).length, 0);
 });

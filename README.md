@@ -109,6 +109,13 @@ convert it with `node scripts/fetch_jerusalem.js --from raw.json`.
   hide cracks between levels), plus coarse terrain around the world. The ground shader shows
   paving where there is city data and hillside elsewhere, using a mask texture.
 - Spawn: on Jaffa Road while the legacy data is loaded, otherwise on a street in a loaded tile.
+- Ownership rules (vertex average, half-open bounds, road cutting) are shared with the pipeline
+  in `src/city/tiling.js`; legacy data is partitioned with the very same functions.
+- Cells are generated and built in a web worker (`src/world/cellWorker.js`, via
+  `WorkerCellBackend`): the worker returns light lookup data (colliders, roads, building
+  records) and geometry as transferred buffers, and the main thread only assembles meshes.
+  Node tests use the same-thread `LocalCellBackend`.
+- Far and unloaded cells share one merged coarse terrain mesh (one draw call).
 
 **License:** map data © OpenStreetMap contributors, ODbL 1.0; elevation data as named in
 `dem_points.json` (Copernicus DEM GLO-90 © DLR e.V. / ESA, CC BY 4.0). The game must show

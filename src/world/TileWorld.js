@@ -26,10 +26,12 @@ import { createProjection } from '../city/geo.js';
 import { createTerrain } from '../city/terrain.js';
 import { CityCollisionWorld } from '../city/CityCollision.js';
 import { gridCellBBox, gridCellOf, ringVertexAverage, ownedRuns, inBBox } from '../city/tiling.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
-  generateCityChunk, buildCityChunk, createCityMaterials, createGroundMaterial, createOuterMaterial,
+  generateCityChunk, assembleChunk, createCityMaterials, createGroundMaterial, createOuterMaterial,
   terrainGeometry, findRoadsAt, MAJOR_HIGHWAYS, DEFAULT_CITY_OPTIONS,
 } from '../city/CityGenerator.js';
+import { LocalCellBackend } from './cellBackends.js';
 
 export const LEVELS = ['none', 'far', 'medium', 'near'];
 const RANK = { none: 0, far: 1, medium: 2, near: 3 };
@@ -41,7 +43,8 @@ export const DEFAULT_WORLD_OPTIONS = Object.freeze({
   mediumDistance: 1200,
   farDistance: 2600,
   hysteresis: 120, // a cell drops a level only this far beyond the threshold
-  maxBuildsPerUpdate: 1, // mesh (re)builds per update() call, to spread the cost over frames
+  maxBuildsPerUpdate: 1, // mesh (re)builds started per update() call
+  maxConcurrentBuilds: 2,
   maxConcurrentLoads: 2,
   terrainSpacing: { near: 8, medium: 16, far: 32, none: 32 },
   terrainSkirt: 4,
@@ -61,8 +64,10 @@ export class TileWorld {
    * @param {object|null} [p.legacy] osm-city-v1 legacy city centre (optional)
    * @param {(file:string) => Promise<object>} p.loadTile  fetches a tile file listed in the manifest
    * @param {Partial<typeof DEFAULT_WORLD_OPTIONS>} [p.options]
+   * @param {(world: TileWorld) => object} [p.backend]  where cells are generated and built
+   *   (default: LocalCellBackend, same thread; the game uses WorkerCellBackend)
    */
-  constructor({ manifest, dem, legacy = null, loadTile, options = {} }) {
+  constructor({ manifest, dem, legacy = null, loadTile, options = {}, backend = null }) {
     if (manifest?.format !== 'tiles-v1') throw new Error('TileWorld: manifest must be tiles-v1');
     this.o = { ...DEFAULT_WORLD_OPTIONS, ...options, terrainSpacing: { ...DEFAULT_WORLD_OPTIONS.terrainSpacing, ...options.terrainSpacing } };
     this.cityOptions = { ...DEFAULT_CITY_OPTIONS, ...this.o.city };
@@ -73,6 +78,7 @@ export class TileWorld {
     // One projection and one terrain for everything.
     this.projection = createProjection(manifest.worldBBox);
     this.bounds = this.projection.bounds;
+    this.dem = dem;
     this.terrain = createTerrain(dem, this.projection);
     this.collision = new CityCollisionWorld({ cellSize: this.cityOptions.collisionCellSize, groundHeightAt: this.terrain.heightAt });
     this.attribution = [manifest.attribution ?? '© OpenStreetMap contributors', dem.attribution].filter(Boolean).join(' · ');
@@ -89,6 +95,8 @@ export class TileWorld {
     this._buildGround();
     this.spawn = null;
     this._inflight = new Set();
+    this._builds = new Set();
+    this.backend = backend ? backend(this) : new LocalCellBackend(this);
   }
 
   // ------------------------------------------------------------------------------------------
@@ -117,7 +125,10 @@ export class TileWorld {
           loading: null,
           failed: false,
           view: null,
+          target: 'none',
+          building: null,
           ground: null,
+          coarseGround: null,
           groundLevel: null,
           collision: false,
         });
@@ -264,23 +275,55 @@ export class TileWorld {
     plane.name = 'OuterGround';
     plane.receiveShadow = true;
     this.groundGroup.add(surround, plane);
+    // Far and unloaded cells share one merged coarse mesh (one draw call); near and medium
+    // cells get their own finer grids.
+    this.farGround = new THREE.Mesh(new THREE.BufferGeometry(), this.groundMaterial);
+    this.farGround.name = 'TerrainFar';
+    this.farGround.receiveShadow = true;
+    this.groundGroup.add(this.farGround);
     for (const cell of this.cells.values()) this._setGroundLevel(cell, 'none');
+    this._rebuildFarGround();
   }
 
   _setGroundLevel(cell, level) {
     const spacing = this.o.terrainSpacing[level];
-    if (cell.ground && cell.groundLevel === spacing) return;
-    const geo = terrainGeometry(this.terrain, cell.rect, spacing, 0, this.o.terrainSkirt);
-    if (cell.ground) {
-      cell.ground.geometry.dispose();
-      cell.ground.geometry = geo;
+    if (cell.groundLevel === spacing) return;
+    const coarse = spacing >= this.o.terrainSpacing.far;
+    if (coarse) {
+      if (cell.ground) {
+        this.groundGroup.remove(cell.ground);
+        cell.ground.geometry.dispose();
+        cell.ground = null;
+      }
     } else {
-      cell.ground = new THREE.Mesh(geo, this.groundMaterial);
-      cell.ground.name = `Terrain[${cell.id}]`;
-      cell.ground.receiveShadow = true;
-      this.groundGroup.add(cell.ground);
+      const geo = terrainGeometry(this.terrain, cell.rect, spacing, 0, this.o.terrainSkirt);
+      if (cell.ground) {
+        cell.ground.geometry.dispose();
+        cell.ground.geometry = geo;
+      } else {
+        cell.ground = new THREE.Mesh(geo, this.groundMaterial);
+        cell.ground.name = `Terrain[${cell.id}]`;
+        cell.ground.receiveShadow = true;
+        this.groundGroup.add(cell.ground);
+      }
     }
+    if (coarse !== (cell.groundLevel != null && cell.groundLevel >= this.o.terrainSpacing.far)) this._groundDirty = true;
     cell.groundLevel = spacing;
+  }
+
+  /** Re-merges the coarse terrain of all far / unloaded cells (only when that set changed). */
+  _rebuildFarGround() {
+    this._groundDirty = false;
+    const far = this.o.terrainSpacing.far;
+    const geos = [];
+    for (const cell of this.cells.values()) {
+      if (cell.groundLevel < far) continue;
+      cell.coarseGround ??= terrainGeometry(this.terrain, cell.rect, far, 0, this.o.terrainSkirt);
+      geos.push(cell.coarseGround);
+    }
+    this.farGround.geometry.dispose();
+    this.farGround.geometry = geos.length ? mergeGeometries(geos, false) : new THREE.BufferGeometry();
+    this.farGround.visible = geos.length > 0;
   }
 
   // ------------------------------------------------------------------------------------------
@@ -304,8 +347,10 @@ export class TileWorld {
   }
 
   /**
-   * Call every frame with the player position. Starts loads, (re)builds at most
-   * maxBuildsPerUpdate cells, drops far cells. Returns true when everything is at its target.
+   * Call every frame with the player position. Starts data loads and mesh builds (both run
+   * on the backend, off the main thread with WorkerCellBackend) and applies finished builds.
+   * Cells that drop to 'none' are freed right away. Returns true when everything is at its
+   * target level and nothing is in flight.
    */
   update(pos) {
     const order = [...this.cells.values()]
@@ -314,34 +359,40 @@ export class TileWorld {
     let builds = 0, settled = true;
     for (const { cell, d } of order) {
       const target = this.targetLevel(cell, d);
+      cell.target = target;
       if (target === cell.level) continue;
       settled = false;
       if (target === 'none') {
-        this._applyLevel(cell, 'none');
+        this._applyLevel(cell, 'none', null);
         continue;
       }
       if (!this._hasData(cell)) {
         this._startLoad(cell);
         continue;
       }
-      if (builds >= this.o.maxBuildsPerUpdate) continue;
-      this._applyLevel(cell, target);
+      if (!this._hasContent(cell)) {
+        this._applyLevel(cell, target, null); // terrain only: nothing to build
+        continue;
+      }
+      if (cell.building || builds >= this.o.maxBuildsPerUpdate || this._builds.size >= this.o.maxConcurrentBuilds) continue;
+      this._startBuild(cell, target);
       builds++;
     }
-    return settled;
+    if (this._groundDirty) this._rebuildFarGround();
+    return settled && !this._builds.size && !this._inflight.size;
   }
 
   /** Loads and builds everything around `pos` right away (spawning, tests, teleports). */
-  async settle(pos, { maxRounds = 200 } = {}) {
-    const saved = this.o.maxBuildsPerUpdate;
-    this.o.maxBuildsPerUpdate = Infinity;
+  async settle(pos, { maxRounds = 500 } = {}) {
+    const saved = [this.o.maxBuildsPerUpdate, this.o.maxConcurrentBuilds];
+    this.o.maxBuildsPerUpdate = this.o.maxConcurrentBuilds = Infinity;
     try {
       for (let round = 0; round < maxRounds; round++) {
-        if (this.update(pos) && !this._inflight.size) return;
-        await Promise.all([...this._inflight]);
+        if (this.update(pos)) return;
+        await Promise.all([...this._inflight, ...this._builds]);
       }
     } finally {
-      this.o.maxBuildsPerUpdate = saved;
+      [this.o.maxBuildsPerUpdate, this.o.maxConcurrentBuilds] = saved;
     }
   }
 
@@ -349,15 +400,17 @@ export class TileWorld {
     return cell.source === 'none' || cell.failed || cell.data !== null;
   }
 
+  _hasContent(cell) {
+    const d = cell.data;
+    return !!d && (d.buildings.length > 0 || d.roads.length > 0 || d.parks.length > 0 || (d.trees?.length ?? d.trees) > 0);
+  }
+
   _startLoad(cell) {
     if (cell.loading || this._inflight.size >= this.o.maxConcurrentLoads) return;
     const task = (async () => {
       await null; // always settle asynchronously, after `task` is registered below
       try {
-        let osm = null;
-        if (cell.source === 'tile') osm = await this.loadTile(cell.tile.file);
-        else if (cell.source === 'legacy') osm = cell.legacyOsm;
-        cell.data = osm ? this.generateCell(cell, osm) : null;
+        cell.data = await this.backend.generate(cell);
       } catch (err) {
         // A tile listed in the manifest but missing or broken: show terrain only, keep going.
         cell.failed = true;
@@ -371,6 +424,28 @@ export class TileWorld {
     this._inflight.add(task);
   }
 
+  _startBuild(cell, level) {
+    const task = (async () => {
+      await null;
+      let parts = null;
+      try {
+        parts = await this.backend.build(cell, level);
+        if (!this._disposed && cell.target === level && cell.data) {
+          this._applyLevel(cell, level, parts);
+          parts = null;
+        }
+      } catch (err) {
+        console.warn(`[world] building ${cell.id} (${level}) failed: ${err.message}`);
+      } finally {
+        for (const part of parts ?? []) if (part.type === 'mesh') part.geometry.dispose(); // arrived too late
+        cell.building = null;
+        this._builds.delete(task);
+      }
+    })();
+    cell.building = task;
+    this._builds.add(task);
+  }
+
   /** City data for one cell, in world coordinates (shared projection and terrain). */
   generateCell(cell, osm) {
     return generateCityChunk(osm, {
@@ -382,8 +457,8 @@ export class TileWorld {
     });
   }
 
-  _applyLevel(cell, level) {
-    // Collision only for near cells.
+  /** Switches a cell to `level`: collision (near only), meshes from `parts`, terrain grid. */
+  _applyLevel(cell, level, parts) {
     if (level === 'near' && !cell.collision && cell.data) {
       for (const box of cell.data.boxes) this.collision.add(box, cell.id);
       cell.collision = true;
@@ -391,14 +466,13 @@ export class TileWorld {
       this.collision.removeGroup(cell.id);
       cell.collision = false;
     }
-    // Meshes.
     if (cell.view) {
       this.group.remove(cell.view.group);
       cell.view.dispose();
       cell.view = null;
     }
-    if (level !== 'none' && cell.data && (cell.data.buildings.length || cell.data.roads.length || cell.data.parks.length)) {
-      cell.view = buildCityChunk(cell.data, { terrain: this.terrain, materials: this.materials, level, options: this.cityOptions });
+    if (parts?.length) {
+      cell.view = assembleChunk(parts, this.materials, `Chunk(${cell.id}:${level})`);
       this.group.add(cell.view.group);
       this.onChunkBuilt?.(cell.view.group, cell);
     }
@@ -460,7 +534,7 @@ export class TileWorld {
       levels[cell.level]++;
       if (cell.level !== 'none') buildings += cell.data?.buildings.length ?? 0;
     }
-    return { cells: this.cells.size, levels, buildings, colliders: this.collision.count, loading: this._inflight.size };
+    return { cells: this.cells.size, levels, buildings, colliders: this.collision.count, loading: this._inflight.size + this._builds.size };
   }
 
   // ------------------------------------------------------------------------------------------
@@ -537,9 +611,12 @@ export class TileWorld {
   }
 
   dispose() {
+    this._disposed = true;
+    this.backend.dispose?.();
     for (const cell of this.cells.values()) {
       cell.view?.dispose();
       cell.ground?.geometry.dispose();
+      cell.coarseGround?.dispose();
     }
     this.groundGroup.traverse((o) => o.isMesh && o.geometry.dispose());
     this.groundMaterial.dispose();

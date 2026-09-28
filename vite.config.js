@@ -4,6 +4,9 @@ export default defineConfig({
   server: {
     port: 5173,
   },
+  worker: {
+    format: 'es', // the cell worker imports modules (three.js, the city generator)
+  },
   build: {
     target: 'es2022',
     sourcemap: true,

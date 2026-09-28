@@ -1689,37 +1689,32 @@ function simplifiedBuilding(b, tolerance, { keepHoles = true, keepRoof = true } 
 }
 
 /**
- * Meshes for one chunk of city data at a level of detail:
+ * Geometry for one chunk of city data at a level of detail, as plain "parts" (no materials,
+ * no scene objects), so it can be computed in a web worker and transferred:
  *   near    everything: parks, paving, curbs, asphalt, markings, full buildings (tile roofs,
- *           facades), rooftop props (tagged userData.detail) and trees
+ *           facades), rooftop props (detail: true) and trees
  *   medium  parks, paving and asphalt; buildings with simplified outlines; no props or trees
- *   far     building silhouettes only (simplified, no courtyards, flat Lambert material)
+ *   far     building silhouettes only (simplified, no courtyards)
  * Terrain is not part of a chunk (the world draws it once).
+ *
+ * Parts: { type: 'mesh', name, material, geometry: BufferGeometry, cast, receive }
+ *        { type: 'instances', name, material, geometry: <shared geometry key>, count,
+ *          matrices: Float32Array(16n), colors: Float32Array(3n), cast, receive, detail }
+ * `material` / `geometry` keys refer to createCityMaterials().
  */
-export function buildCityChunk(chunk, { terrain = FLAT_TERRAIN, materials: M, level = 'near', options = {} }) {
-  const group = new THREE.Group();
-  group.name = `Chunk(${chunk.id}:${level})`;
-  const owned = [];
-  const addMesh = (geo, mat, name, { cast = false, receive = true } = {}) => {
-    owned.push(geo);
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.name = name;
-    mesh.castShadow = cast;
-    mesh.receiveShadow = receive;
-    group.add(mesh);
-    return mesh;
-  };
+export function buildChunkParts(chunk, { terrain = FLAT_TERRAIN, level = 'near' }) {
+  const parts = [];
+  const mesh = (name, material, geometry, cast = false, receive = true) => parts.push({ type: 'mesh', name, material, geometry, cast, receive });
   const layer = (name, geometries, material, lift) => {
     if (!geometries.length) return;
     const merged = mergeGeometries(geometries, false);
     for (const g of geometries) g.dispose();
-    const geo = drapeGeometry(merged, terrain, lift, 6);
+    mesh(name, material, drapeGeometry(merged, terrain, lift, 6));
     merged.dispose();
-    addMesh(geo, material, name);
   };
 
   if (level !== 'far') {
-    layer('Parks', chunk.parks.map((p) => flatPolygonGeometry(p.rings, 0)), M.park, 0.02);
+    layer('Parks', chunk.parks.map((p) => flatPolygonGeometry(p.rings, 0)), 'park', 0.02);
     const geos = { asphalt: [], paving: [], curb: [], marking: [] };
     for (const r of chunk.roads) {
       geos[r.surface].push(r.rings ? flatPolygonGeometry(r.rings, 0) : ribbonGeometry(r.points, r.width / 2, 0));
@@ -1727,10 +1722,10 @@ export function buildCityChunk(chunk, { terrain = FLAT_TERRAIN, materials: M, le
       geos.curb.push(curbGeometry(r.points, r.width / 2, CURB_WIDTH));
       if (r.width >= 8) geos.marking.push(dashedLineGeometry(r.points, 0.07, 3, 4));
     }
-    layer('Paving', geos.paving, M.paving, 0.04);
-    if (level === 'near') layer('Curbs', geos.curb, M.curb, 0.05);
-    layer('Roads', geos.asphalt, M.asphalt, 0.06);
-    if (level === 'near') layer('Markings', geos.marking, M.marking, 0.08);
+    layer('Paving', geos.paving, 'paving', 0.04);
+    if (level === 'near') layer('Curbs', geos.curb, 'curb', 0.05);
+    layer('Roads', geos.asphalt, 'asphalt', 0.06);
+    if (level === 'near') layer('Markings', geos.marking, 'marking', 0.08);
   }
 
   // Buildings, merged into one mesh (one draw call per chunk).
@@ -1738,41 +1733,68 @@ export function buildCityChunk(chunk, { terrain = FLAT_TERRAIN, materials: M, le
     : level === 'medium' ? chunk.buildings.map((b) => simplifiedBuilding(b, 1))
     : chunk.buildings.filter((b) => b.area >= 40 && b.kind === 'building').map((b) => simplifiedBuilding(b, 3, { keepHoles: false, keepRoof: false }));
   if (source.length) {
-    const parts = source.map((b) => extrudeBuilding(b));
-    const geo = mergeGeometries(parts, false);
-    for (const g of parts) g.dispose();
-    geo.computeBoundingSphere();
-    addMesh(geo, level === 'far' ? M.silhouette : M.stone, 'Buildings', { cast: level !== 'far', receive: level !== 'far' });
+    const geos = source.map((b) => extrudeBuilding(b));
+    const geo = mergeGeometries(geos, false);
+    for (const g of geos) g.dispose();
+    mesh('Buildings', level === 'far' ? 'silhouette' : 'stone', geo, level !== 'far', level !== 'far');
   }
 
-  const detailMeshes = [];
   if (level === 'near') {
-    const b = chunk.bounds;
-    const origin = { x: b.minX, z: b.minZ, nx: 1, nz: 1 };
-    const inst = (items, opts) => {
+    const inst = (name, material, geometry, items, { cast = true, receive = true, detail = false } = {}) => {
       if (!items.length) return;
-      const { meshes } = buildChunkedInstances(items, { origin, chunkSize: 1e9, castShadow: true, receiveShadow: true, ...opts });
-      for (const mesh of meshes) {
-        group.add(mesh);
-        if (mesh.userData.detail) detailMeshes.push(mesh);
-      }
+      const matrices = new Float32Array(items.length * 16), colors = new Float32Array(items.length * 3);
+      items.forEach((it, i) => {
+        _p.set(it.x, it.y, it.z);
+        _s.set(it.sx, it.sy, it.sz);
+        _q.setFromEuler(_e.set(it.rx ?? 0, it.ry ?? 0, 0));
+        _m.compose(_p, _q, _s).toArray(matrices, i * 16);
+        _c.setHex(it.color).toArray(colors, i * 3);
+      });
+      parts.push({ type: 'instances', name, material, geometry, count: items.length, matrices, colors, cast, receive, detail });
     };
     const { solar, ac } = chunk.roofProps;
-    inst(solar.map((s) => ({ x: s.x, y: s.y, z: s.z, sx: 1, sy: 1, sz: 1, color: 0xffffff })), { name: 'SolarHeaters', geometry: M.geometries.solar, material: M.solar, detail: true });
-    inst(ac.map((a) => ({ x: a.x, y: a.y, z: a.z, sx: a.w, sy: a.h, sz: a.d, ry: a.yaw, color: COLORS.ac })), { name: 'AcUnits', geometry: M.geometries.box, material: M.ac, detail: true });
-    inst(chunk.trees.map((t) => ({ x: t.x, y: t.y, z: t.z, sx: t.trunkRadius, sy: t.trunkHeight + t.crownRadius * 0.5, sz: t.trunkRadius, color: COLORS.trunk })), { name: 'TreeTrunks', geometry: M.geometries.trunk, material: M.trunk, receiveShadow: false });
-    inst(chunk.trees.map((t) => ({ x: t.x, y: t.y + t.trunkHeight + t.crownRadius * 0.6, z: t.z, sx: t.crownRadius, sy: t.crownRadius * 0.85, sz: t.crownRadius, color: t.color })), { name: 'TreeCrowns', geometry: M.geometries.crown, material: M.crown });
+    inst('SolarHeaters', 'solar', 'solar', solar.map((s) => ({ x: s.x, y: s.y, z: s.z, sx: 1, sy: 1, sz: 1, color: 0xffffff })), { detail: true });
+    inst('AcUnits', 'ac', 'box', ac.map((a) => ({ x: a.x, y: a.y, z: a.z, sx: a.w, sy: a.h, sz: a.d, ry: a.yaw, color: COLORS.ac })), { detail: true });
+    inst('TreeTrunks', 'trunk', 'trunk', chunk.trees.map((t) => ({ x: t.x, y: t.y, z: t.z, sx: t.trunkRadius, sy: t.trunkHeight + t.crownRadius * 0.5, sz: t.trunkRadius, color: COLORS.trunk })), { receive: false });
+    inst('TreeCrowns', 'crown', 'crown', chunk.trees.map((t) => ({ x: t.x, y: t.y + t.trunkHeight + t.crownRadius * 0.6, z: t.z, sx: t.crownRadius, sy: t.crownRadius * 0.85, sz: t.crownRadius, color: t.color })));
   }
+  return parts;
+}
 
+/** Turns chunk parts into a group of meshes with the shared materials. */
+export function assembleChunk(parts, M, name = 'Chunk') {
+  const group = new THREE.Group();
+  group.name = name;
+  const owned = [];
+  const detailMeshes = [];
+  for (const part of parts) {
+    let obj;
+    if (part.type === 'mesh') {
+      owned.push(part.geometry);
+      part.geometry.computeBoundingSphere();
+      obj = new THREE.Mesh(part.geometry, M[part.material]);
+    } else {
+      obj = new THREE.InstancedMesh(M.geometries[part.geometry], M[part.material], part.count);
+      obj.instanceMatrix.array.set(part.matrices);
+      obj.instanceMatrix.needsUpdate = true;
+      obj.instanceColor = new THREE.InstancedBufferAttribute(part.colors, 3);
+      obj.computeBoundingBox();
+      obj.computeBoundingSphere();
+      obj.userData.detail = part.detail;
+      if (part.detail) detailMeshes.push(obj);
+    }
+    obj.name = part.name;
+    obj.castShadow = part.cast;
+    obj.receiveShadow = part.receive;
+    group.add(obj);
+  }
   group.traverse((obj) => {
     obj.matrixAutoUpdate = false;
     obj.updateMatrix();
   });
   group.updateMatrixWorld(true);
-
   return {
     group,
-    level,
     detailMeshes,
     dispose() {
       for (const g of owned) g.dispose();
@@ -1780,6 +1802,44 @@ export function buildCityChunk(chunk, { terrain = FLAT_TERRAIN, materials: M, le
       group.clear();
     },
   };
+}
+
+/** buildChunkParts + assembleChunk in one call (same thread). */
+export function buildCityChunk(chunk, { terrain = FLAT_TERRAIN, materials, level = 'near' }) {
+  const view = assembleChunk(buildChunkParts(chunk, { terrain, level }), materials, `Chunk(${chunk.id}:${level})`);
+  return { ...view, level };
+}
+
+/** The parts of a chunk as transferable buffers (for postMessage from a worker). */
+export function packChunkParts(parts) {
+  const transfer = [];
+  const packed = parts.map((part) => {
+    if (part.type !== 'mesh') {
+      transfer.push(part.matrices.buffer, part.colors.buffer);
+      return part;
+    }
+    const g = part.geometry;
+    const attributes = {};
+    for (const [key, attr] of Object.entries(g.attributes)) {
+      attributes[key] = { array: attr.array, itemSize: attr.itemSize };
+      transfer.push(attr.array.buffer);
+    }
+    const index = g.index ? g.index.array : null;
+    if (index) transfer.push(index.buffer);
+    return { ...part, geometry: { attributes, index } };
+  });
+  return { parts: packed, transfer: [...new Set(transfer)] };
+}
+
+/** Inverse of packChunkParts: rebuilds BufferGeometries from transferred buffers. */
+export function unpackChunkParts(parts) {
+  return parts.map((part) => {
+    if (part.type !== 'mesh') return part;
+    const g = new THREE.BufferGeometry();
+    for (const [key, a] of Object.entries(part.geometry.attributes)) g.setAttribute(key, new THREE.BufferAttribute(a.array, a.itemSize));
+    if (part.geometry.index) g.setIndex(new THREE.BufferAttribute(part.geometry.index, 1));
+    return { ...part, geometry: g };
+  });
 }
 
 /**
@@ -1871,4 +1931,28 @@ normal = normalize(normal + normalize((viewMatrix * vec4(1.0, 0.0, 0.0, 0.0)).xy
 /** The outer-ground material (land beyond the world), exported for the streaming world. */
 export function createOuterMaterial(uniforms, bounds) {
   return createOuterGroundMaterial(uniforms, bounds);
+}
+
+/**
+ * What the main thread needs from a chunk when the heavy work (geometry) happens elsewhere:
+ * collision boxes, roads with their lookup grid (HUD street names), light building records
+ * (HUD, lookups) and bounds. Structured-clone friendly.
+ */
+export function chunkLookup(chunk) {
+  const buildings = chunk.buildings.map((b) => ({
+    id: b.id, osmId: b.osmId, kind: b.kind, name: b.name, address: b.address, floors: b.floors,
+    height: b.height, heightAboveGround: b.heightAboveGround, heightSource: b.heightSource, centroid: b.centroid,
+  }));
+  return {
+    id: chunk.id,
+    buildings,
+    buildingById: new Map(buildings.map((b) => [b.id, b])),
+    roads: chunk.roads,
+    roadGrid: chunk.roadGrid,
+    parks: chunk.parks.map((p) => ({ id: p.id, name: p.name })),
+    trees: chunk.trees.length,
+    boxes: chunk.boxes,
+    bounds: chunk.bounds,
+    stats: chunk.stats,
+  };
 }

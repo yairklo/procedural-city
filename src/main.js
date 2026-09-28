@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TileWorld } from './world/TileWorld.js';
+import { WorkerCellBackend } from './world/cellBackends.js';
 import { createLighting } from './render/lighting.js';
 import { createPostProcessing } from './render/postprocessing.js';
 import { createSurroundings } from './render/surroundings.js';
@@ -115,7 +116,16 @@ async function loadWorld() {
     // The old city-centre file stays as a "legacy" source until tiles cover it.
     getJson(`${DATA}jerusalem_data.json`, { optional: true }),
   ]);
-  world = new TileWorld({ manifest, dem, legacy, loadTile: (file) => getJson(`${DATA}tiles/${file}`) });
+  // Cell generation and geometry building run in a web worker (no hitches when cells stream
+  // in); if workers are unavailable the world falls back to building on the main thread.
+  let backend = null;
+  try {
+    const worker = new Worker(new URL('./world/cellWorker.js', import.meta.url), { type: 'module' });
+    backend = (w) => new WorkerCellBackend(w, { worker, tileUrl: (file) => new URL(`${DATA}tiles/${file}`, window.location.href).href });
+  } catch (err) {
+    console.warn('[world] no web worker, building cells on the main thread:', err.message);
+  }
+  world = new TileWorld({ manifest, dem, legacy, loadTile: (file) => getJson(`${DATA}tiles/${file}`), backend });
   scene.add(world.group);
   lighting.setupMaterial(world.groundMaterial);
   lighting.setupMaterial(world.outerMaterial);
