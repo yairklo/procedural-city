@@ -449,13 +449,13 @@ export class CityGenerator {
     // Ground: stone-slab sidewalks under the whole data area, dry land beyond it.
     const ground = add(new THREE.Mesh(
       track(new THREE.PlaneGeometry(width, depth).rotateX(-Math.PI / 2).translate(cx, 0, cz)),
-      track(createSurfaceMaterial('paving', COLORS.ground, { roughness: 0.9 })),
+      track(createSurfaceMaterial('paving', COLORS.ground, { roughness: 0.9, uniforms })),
     ));
     ground.name = 'Ground';
     ground.receiveShadow = true;
     const outer = add(new THREE.Mesh(
       track(new THREE.PlaneGeometry(width + 6000, depth + 6000).rotateX(-Math.PI / 2).translate(cx, -0.4, cz)),
-      track(new THREE.MeshStandardMaterial({ color: COLORS.outerGround, roughness: 1 })),
+      track(createOuterGroundMaterial(uniforms, bounds)),
     ));
     outer.name = 'OuterGround';
     outer.receiveShadow = true;
@@ -479,10 +479,10 @@ export class CityGenerator {
       geos.curb.push(ribbonGeometry(r.points, r.width / 2 + CURB_WIDTH, 0));
       if (r.width >= 8) geos.marking.push(dashedLineGeometry(r.points, 0.07, 3, 4));
     }
-    layer('Paving', geos.paving, createSurfaceMaterial('paving', COLORS.paving, { offset: -7 }));
-    layer('Curbs', geos.curb, createSurfaceMaterial('curb', COLORS.curb, { roughness: 0.85, offset: -11 }));
-    layer('Roads', geos.asphalt, createSurfaceMaterial('asphalt', COLORS.asphalt, { roughness: 0.93, offset: -15 }));
-    layer('Markings', geos.marking, createSurfaceMaterial('marking', COLORS.marking, { roughness: 0.7, offset: -19 }));
+    layer('Paving', geos.paving, createSurfaceMaterial('paving', COLORS.paving, { offset: -7, uniforms }));
+    layer('Curbs', geos.curb, createSurfaceMaterial('curb', COLORS.curb, { roughness: 0.85, offset: -11, uniforms }));
+    layer('Roads', geos.asphalt, createSurfaceMaterial('asphalt', COLORS.asphalt, { roughness: 0.93, offset: -15, uniforms }));
+    layer('Markings', geos.marking, createSurfaceMaterial('marking', COLORS.marking, { roughness: 0.7, offset: -19, uniforms }));
 
     // Buildings: real footprints extruded, merged per chunk with BufferGeometryUtils.
     const chunks = new Map();
@@ -1017,6 +1017,9 @@ ${GLSL_BEVEL}`,
         /* glsl */ `#include <color_fragment>
 float cityWin = 0.0;    // glass coverage (drives roughness + night lights)
 float cityLit = 0.0;    // lit share at night
+float cityWash = 0.0;   // street-lamp light on the lower facade at night
+// Night in Jerusalem: most apartments dark or behind closed shutters, shops shuttered.
+float cityLitRate = 0.03 + 0.2 * pow(cityHash(vec3(vCityFacade.x, 12.0, 3.0)), 2.0);
 float cityRough = 0.0;  // roughness offset
 float cityMetal = 0.0;
 vec2 cityBump = vec2(0.0); // normal tilt along (cityT, up)
@@ -1083,6 +1086,9 @@ vec3 cityT = vec3(1.0, 0.0, 0.0);
     stone = mix(stone, base * vec3(0.72, 0.71, 0.69), mortar);
     diffuseColor.rgb = mix(stone, base * 0.98, stoneFade);
     diffuseColor.rgb *= mix(0.8, 1.0, smoothstep(0.0, 1.3, y)); // street grime
+    // Sodium street lamps every ~28 m wash the stone orange, fading up the facade.
+    float pool = 0.5 + 0.5 * cos(u * 6.2832 / 28.0 + seed * 6.0);
+    cityWash = (1.0 - smoothstep(1.5, 12.0, y)) * (0.25 + 0.75 * pool * pool);
     cityRough = mortar * 0.1;
 
     float density = vCityFacade.y;
@@ -1102,14 +1108,14 @@ vec3 cityT = vec3(1.0, 0.0, 0.0);
       diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.8, surround);
       diffuseColor.rgb = mix(diffuseColor.rgb, signCol, signBand);
       cityBump *= 1.0 - max(front, signBand);
-      float shut = step(0.55, cityHash(vec3(sid, seed, 5.0)));
+      float shut = step(mix(0.55, 0.12, uNight), cityHash(vec3(sid, seed, 5.0))); // most shops close at night
       float ridges = 0.8 + 0.2 * step(0.5, fract(sp.y * 12.0));
       vec3 shutter = vec3(0.42, 0.43, 0.44) * ridges;
       vec3 glass = mix(vec3(0.03, 0.035, 0.04), vec3(0.13, 0.1, 0.07), cityHash(vec3(sid, 2.0, seed)));
       diffuseColor.rgb = mix(diffuseColor.rgb, mix(glass, shutter, shut), front);
       cityWin = front * (1.0 - shut);
       cityMetal = front * shut * 0.6;
-      cityLit = cityWin * step(0.3, cityHash(vec3(sid, 6.0, seed)));
+      cityLit = cityWin * step(0.4, cityHash(vec3(sid, 6.0, seed)));
     } else if (density > 0.0) {
       // --- Windows ---
       float bay = mix(4.4, 3.2, density);
@@ -1135,7 +1141,7 @@ vec3 cityT = vec3(1.0, 0.0, 0.0);
       bool hasShutters = sh > 0.4 && !arched;
       vec3 shutterCol = sh > 0.8 ? vec3(0.1, 0.2, 0.13) : sh > 0.62 ? vec3(0.13, 0.2, 0.28) : vec3(0.22, 0.13, 0.07);
       float louver = 0.75 + 0.25 * step(0.4, fract(pm.y * 14.0));
-      float closed = hasShutters ? step(cityHash(vec3(id, seed + 2.0)), 0.25) : 0.0;
+      float closed = hasShutters ? step(cityHash(vec3(id, seed + 2.0)), mix(0.25, 0.6, uNight)) : 0.0;
       float leaves = hasShutters ? cityBox(vec2(abs(pm.x) - hs.x * 1.5 - 0.12, pm.y), vec2(hs.x * 0.5, hs.y), aam) * present * (1.0 - closed) : 0.0;
 
       // Recess: the reveal shades the top and one side of the glass.
@@ -1152,8 +1158,8 @@ vec3 cityT = vec3(1.0, 0.0, 0.0);
       diffuseColor.rgb = mix(diffuseColor.rgb, mix(inOpening, glass, fade), cover);
       cityWin = cover * (1.0 - closed);
       cityBump *= 1.0 - max(opening, leaves);
-      float lit = step(0.6, cityHash(vec3(id, n.x * 3.0 + n.z * 5.0 + seed * 97.0)));
-      cityLit = mix(opening * (1.0 - closed) * lit, avg * 0.4, fade);
+      float lit = step(1.0 - cityLitRate, cityHash(vec3(id, n.x * 3.0 + n.z * 5.0 + seed * 97.0)));
+      cityLit = mix(opening * (1.0 - closed) * lit, avg * cityLitRate * 0.6, fade);
     }
   }
 }`,
@@ -1183,8 +1189,49 @@ metalnessFactor = max(metalnessFactor, cityMetal);`,
         /* glsl */ `#include <emissivemap_fragment>
 {
   float tint = cityHash(vec3(floor(vCityWorldPos.y / uFloorHeight), vCityFacade.x * 53.0, 1.0));
-  vec3 warm = mix(vec3(1.0, 0.68, 0.38), vec3(0.8, 0.87, 1.0), step(0.85, tint));
-  totalEmissiveRadiance += cityLit * uNight * warm * 1.6;
+  // Mostly warm incandescent-looking light, the odd cool fluorescent kitchen.
+  vec3 warm = mix(vec3(1.0, 0.64, 0.32), vec3(0.85, 0.9, 1.0), step(0.9, tint));
+  totalEmissiveRadiance += cityLit * uNight * warm * mix(0.8, 1.4, tint);
+  totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.55, 0.22) * cityWash * uNight * 0.55;
+}`,
+      );
+  };
+  return mat;
+}
+
+/**
+ * Land around the modelled area. At night it fills with the rest of the city's street
+ * lights (jittered lamps every ~30 m with orange pools), so the edge doesn't end in darkness.
+ */
+function createOuterGroundMaterial(uniforms, bounds) {
+  const mat = new THREE.MeshStandardMaterial({ color: COLORS.outerGround, roughness: 1 });
+  mat.customProgramCacheKey = () => 'city-outer-ground';
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uNight = uniforms.uNight;
+    shader.uniforms.uArea = { value: new THREE.Vector4(bounds.minX, bounds.minZ, bounds.maxX, bounds.maxZ) };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vOuterPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vOuterPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying vec3 vOuterPos;\nuniform float uNight;\nuniform vec4 uArea;\n${GLSL_COMMON}`)
+      .replace(
+        '#include <emissivemap_fragment>',
+        /* glsl */ `#include <emissivemap_fragment>
+{
+  vec2 p = vOuterPos.xz;
+  vec2 out2 = max(max(uArea.xy - p, p - uArea.zw), 0.0);
+  float outside = smoothstep(20.0, 120.0, length(out2));
+  vec2 cell = floor(p / 30.0);
+  vec2 lamp = (cell + 0.2 + 0.6 * vec2(cityHash(vec3(cell, 1.0)), cityHash(vec3(cell, 2.0)))) * 30.0;
+  float on = step(0.3, cityHash(vec3(cell, 3.0)));
+  float d = length(p - lamp);
+  float aa = length(fwidth(p));
+  float bulb = 1.0 - smoothstep(0.5, 0.5 + aa * 1.5, d);
+  float pool = exp(-d * d / 90.0);
+  float near = bulb * 4.0 + pool * 0.6;
+  float glow = mix(near * on, 0.15, smoothstep(1.0, 6.0, aa)); // far away: average glow
+  float district = 0.6 + 0.4 * cityNoise(p / 400.0);
+  totalEmissiveRadiance += vec3(1.0, 0.55, 0.22) * uNight * outside * district * (glow * 0.35 + 0.02);
 }`,
       );
   };
@@ -1199,18 +1246,19 @@ metalnessFactor = max(metalnessFactor, cityMetal);`,
  *   'grass'   dry Mediterranean lawn
  *   'marking' worn white paint
  */
-function createSurfaceMaterial(kind, color, { roughness = 0.92, offset = 0 } = {}) {
+function createSurfaceMaterial(kind, color, { roughness = 0.92, offset = 0, uniforms = null } = {}) {
   const mat = new THREE.MeshStandardMaterial({
     color, roughness, metalness: 0,
     polygonOffset: offset !== 0, polygonOffsetFactor: offset !== 0 ? -1 : 0, polygonOffsetUnits: offset,
   });
   mat.customProgramCacheKey = () => `city-surface-${kind}`;
   mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uNight = uniforms?.uNight ?? { value: 0 };
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vSurfPos;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vSurfPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vSurfPos;\n#define SURF_${kind.toUpperCase()}\n${GLSL_COMMON}\n${GLSL_BEVEL}`)
+      .replace('#include <common>', `#include <common>\nvarying vec3 vSurfPos;\nuniform float uNight;\n#define SURF_${kind.toUpperCase()}\n${GLSL_COMMON}\n${GLSL_BEVEL}`)
       .replace(
         '#include <color_fragment>',
         /* glsl */ `#include <color_fragment>
@@ -1261,6 +1309,14 @@ float surfRough = 0.0;
 }`,
       )
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + surfRough, 0.0, 1.0);')
+      .replace(
+        '#include <emissivemap_fragment>',
+        /* glsl */ `#include <emissivemap_fragment>
+#if !defined(SURF_GRASS)
+  // Sodium street lighting: uneven orange pools on streets and sidewalks at night.
+  totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.55, 0.22) * uNight * 0.3 * mix(0.5, 1.0, cityFbm(vSurfPos.xz / 9.0));
+#endif`,
+      )
       .replace(
         '#include <normal_fragment_maps>',
         /* glsl */ `#include <normal_fragment_maps>

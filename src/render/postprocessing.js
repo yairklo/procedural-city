@@ -70,7 +70,7 @@ export function createPostProcessing(renderer, scene, camera) {
     },
     /** Night: stronger bloom so lit windows glow. */
     setNight(t) {
-      bloom.strength = THREE.MathUtils.lerp(0.16, 0.6, t);
+      bloom.strength = THREE.MathUtils.lerp(0.16, 0.45, t);
       bloom.threshold = THREE.MathUtils.lerp(1.4, 0.5, t);
       grade.uniforms.warmth.value = THREE.MathUtils.lerp(1, 0, t);
     },

@@ -55,6 +55,11 @@ before a commercial release.
 - `src/render/postprocessing.js`: 4x MSAA HDR render → GTAO (ambient occlusion, 2.2 m radius,
   for contact shadows in streets and alleys) → bloom (highlights only) → warm color grade →
   vignette → ACES Filmic tone mapping.
+- `src/render/surroundings.js`: the rest of the city around the modelled area. A distant
+  skyline ring (~1.8 km out, rolling hills of low buildings) is a hazy ridge by day and a
+  silhouette with scattered lit windows by night. A night sky dome has an orange
+  light-pollution horizon and a few stars. At night the land between them fills with
+  street lights (outer-ground shader).
 - `src/city/geo.js`: lat/lon → local meters (+X east, −Z north, origin at the bbox center).
 - `src/city/footprint.js`: polygon helpers and `decomposeFootprint()`, which turns any
   footprint (rotated, concave, with holes) into axis-aligned boxes for collision.

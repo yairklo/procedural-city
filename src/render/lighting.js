@@ -26,9 +26,10 @@ const LOOK = {
     sun: new THREE.Color(0xfff3e0), sunIntensity: 3.6, env: 0.2, exposure: 0.78,
   },
   night: {
-    background: new THREE.Color(0x0a0f1d), fog: new THREE.Color(0x0e1322), fogNear: 120, fogFar: 1200,
-    hemiSky: new THREE.Color(0x2a3656), hemiGround: new THREE.Color(0x16120d), hemi: 0.18,
-    sun: new THREE.Color(0x9fb4ff), sunIntensity: 0.3, env: 0.06, exposure: 1.2,
+    // Moonlight from above, warm light-pollution bounce from below, orange-brown city haze.
+    background: new THREE.Color(0x0a0c14), fog: new THREE.Color(0x1f1710), fogNear: 250, fogFar: 2600,
+    hemiSky: new THREE.Color(0x3a4a78), hemiGround: new THREE.Color(0x5a3c20), hemi: 0.3,
+    sun: new THREE.Color(0xa8bcff), sunIntensity: 0.32, env: 0.07, exposure: 1.15,
   },
 };
 
@@ -121,7 +122,7 @@ export function createLighting({ renderer, scene, camera, shadowFar = 700 }) {
     /** 0 = day, 1 = night. */
     setNight(t) {
       const a = LOOK.day, b = LOOK.night;
-      sky.visible = t < 0.5;
+      sky.visible = t < 0.999; // the night dome (surroundings.js) fades in over it
       scene.background.lerpColors(a.background, b.background, t);
       scene.fog.color.lerpColors(a.fog, b.fog, t);
       scene.fog.near = THREE.MathUtils.lerp(a.fogNear, b.fogNear, t);

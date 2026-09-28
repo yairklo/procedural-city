@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CityGenerator, findRoadsAt, findPlaceAt } from './city/CityGenerator.js';
 import { createLighting } from './render/lighting.js';
 import { createPostProcessing } from './render/postprocessing.js';
+import { createSurroundings } from './render/surroundings.js';
 import './style.css';
 
 // ------------------------------------------------------------------------------------------------
@@ -40,12 +41,14 @@ controls.enablePan = false;
 
 const lighting = createLighting({ renderer, scene, camera });
 const post = createPostProcessing(renderer, scene, camera);
+const surroundings = createSurroundings({ scene });
 
 let night = 0;
 let nightTarget = 0;
 
 function applyLook(t) {
   lighting.setNight(t);
+  surroundings.setNight(t);
   post.setNight(t);
   city?.setNight(t);
 }
@@ -174,7 +177,10 @@ function buildCity(osm) {
 
   // Handy for debugging from the devtools console.
   window.city = city;
-  window.debug = { camera, controls, player, scene, renderer };
+  window.debug = {
+    camera, controls, player, scene, renderer, lighting, post,
+    setNight: (v) => { night = nightTarget = v; applyLook(v); },
+  };
   console.info(`[city] ${city.data.name}`, city.data.stats);
 }
 
@@ -262,6 +268,7 @@ renderer.setAnimationLoop(() => {
   followCamera();
   controls.update();
   lighting.update();
+  surroundings.update(camera);
   renderer.info.reset();
   post.render(dt);
   updateHud(dt);
