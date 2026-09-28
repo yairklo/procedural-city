@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { CityGenerator, findRoadsAt, findBlockAt } from './city/CityGenerator.js';
+import { CityGenerator, findRoadsAt, findPlaceAt } from './city/CityGenerator.js';
 import './style.css';
 
 // ------------------------------------------------------------------------------------------------
@@ -111,7 +111,7 @@ window.addEventListener('keydown', (e) => {
   keys.add(e.code);
   if (e.repeat) return;
   if (e.code === 'KeyN') nightTarget = nightTarget > 0.5 ? 0 : 1;
-  if (e.code === 'KeyR') buildCity(`city-${Math.floor(Math.random() * 1e6)}`);
+  if (e.code === 'KeyR') respawn();
   if (e.code === 'Space' && grounded) velocity.y = PLAYER.jump;
   if (e.code === 'KeyE') velocity.y = PLAYER.boost; // test jump for reaching rooftops
 });
@@ -193,27 +193,40 @@ function followCamera() {
 /** @type {ReturnType<CityGenerator['create']> | null} */
 let city = null;
 
-function buildCity(seed) {
+const DATA_URL = `${import.meta.env.BASE_URL}data/jerusalem_data.json`;
+
+async function loadOsm() {
+  const res = await fetch(DATA_URL);
+  if (!res.ok) throw new Error(`${DATA_URL}: HTTP ${res.status}. Run "npm run fetch-data" once to download the OpenStreetMap data.`);
+  return res.json();
+}
+
+function buildCity(osm) {
   if (city) {
     scene.remove(city.group);
     city.dispose();
   }
-  city = new CityGenerator({ seed }).create();
+  city = new CityGenerator({ osm }).create();
   scene.add(city.group);
   city.setNight(night);
-
-  const s = city.data.spawn;
-  player.position.set(s.x, s.y, s.z);
-  velocity.set(0, 0, 0);
-  _prevTarget.set(s.x, s.y + PLAYER.height * 0.8, s.z);
-  camera.position.set(s.x - 40, 45, s.z + 60);
-  controls.target.copy(_prevTarget);
-  controls.update();
+  respawn();
 
   // Handy for debugging from the devtools console.
   window.city = city;
   window.debug = { camera, controls, player, scene, renderer };
-  console.info(`[city] ${city.data.name} (${seed})`, city.data.stats);
+  console.info(`[city] ${city.data.name}`, city.data.stats);
+}
+
+/** Puts the player back on the spawn street, camera behind them looking along the road. */
+function respawn() {
+  if (!city) return;
+  const s = city.data.spawn;
+  player.position.set(s.x, s.y, s.z);
+  velocity.set(0, 0, 0);
+  _prevTarget.set(s.x, s.y + PLAYER.height * 0.8, s.z);
+  camera.position.set(s.x - Math.sin(s.heading) * 14, s.y + 7, s.z - Math.cos(s.heading) * 14);
+  controls.target.copy(_prevTarget);
+  controls.update();
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -234,19 +247,21 @@ function updateHud(dt) {
   const { data } = city;
   const p = player.position;
   const roads = findRoadsAt(data, p.x, p.z);
-  const block = findBlockAt(data, p.x, p.z);
-  let where = roads.length ? roads.map((r) => r.name).join(' & ') : block ? `${block.district} · ${block.id}` : '—';
+  const place = findPlaceAt(data, p.x, p.z);
+  const named = [...new Set(roads.map((r) => r.name).filter(Boolean))];
+  const where = named.length ? named.join(' & ') : roads.length ? `unnamed ${roads[0].highway}` : 'off-street';
   const touching = lastHits.find((b) => b.kind === 'building');
   const touched = touching ? data.buildingById.get(touching.ref) : null;
 
   const info = renderer.info.render;
   hud.innerHTML =
-    `<strong>${data.name}</strong> <span class="dim">seed ${data.seed}</span>\n` +
+    `<strong>${data.name}</strong>${place ? ` <span class="dim">· ${place.name}</span>` : ''}\n` +
     `${fps} fps · ${info.calls} draw calls · ${(info.triangles / 1000).toFixed(0)}k tris\n` +
     `${data.stats.buildings} buildings · ${data.stats.colliders} colliders · built in ${data.stats.generateMs + data.stats.buildMs} ms\n` +
     `<span class="dim">at</span> ${where}  <span class="dim">y=${p.y.toFixed(1)}</span>\n` +
-    (touched ? `<span class="dim">touching</span> ${touched.id} · ${touched.address} (${touched.floors} fl)\n` : '') +
-    `<span class="dim">WASD move · Shift sprint · Space jump · E boost · drag to orbit · N day/night · R new city</span>`;
+    (touched ? `<span class="dim">touching</span> ${touched.name ?? touched.address ?? touched.id} · ${touched.height.toFixed(1)} m (${touched.heightSource})\n` : '') +
+    `<span class="dim">WASD move · Shift sprint · Space jump · E boost · drag to orbit · N day/night · R respawn</span>\n` +
+    `<span class="dim">${data.source.attribution}</span>`;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -264,8 +279,13 @@ window.addEventListener('resize', onResize);
 
 const timer = new THREE.Clock();
 
-buildCity('city-001');
 applyLook(night);
+loadOsm()
+  .then(buildCity)
+  .catch((err) => {
+    console.error(err);
+    hud.textContent = `Could not load city data.\n${err.message}`;
+  });
 
 renderer.setAnimationLoop(() => {
   const dt = Math.min(timer.getDelta(), 1 / 20);
