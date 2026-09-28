@@ -222,6 +222,160 @@
     "trees": 9,
     "places": 0
    }
+  },
+  {
+   "id": "3_1",
+   "i": 3,
+   "j": 1,
+   "bbox": {
+    "south": 31.77,
+    "west": 35.223,
+    "north": 31.775,
+    "east": 35.229
+   },
+   "file": "osm_3_1.json",
+   "bytes": 46882,
+   "fetchedAt": "2026-07-24T11:04:51Z",
+   "stats": {
+    "buildings": 55,
+    "roads": 140,
+    "roadAreas": 2,
+    "parks": 11,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "4_1",
+   "i": 4,
+   "j": 1,
+   "bbox": {
+    "south": 31.77,
+    "west": 35.229,
+    "north": 31.775,
+    "east": 35.235
+   },
+   "file": "osm_4_1.json",
+   "bytes": 131226,
+   "fetchedAt": "2026-09-28T15:05:45Z",
+   "stats": {
+    "buildings": 306,
+    "roads": 218,
+    "roadAreas": 7,
+    "parks": 14,
+    "trees": 154,
+    "places": 0
+   }
+  },
+  {
+   "id": "0_2",
+   "i": 0,
+   "j": 2,
+   "bbox": {
+    "south": 31.775,
+    "west": 35.205,
+    "north": 31.78,
+    "east": 35.211
+   },
+   "file": "osm_0_2.json",
+   "bytes": 50060,
+   "fetchedAt": "2026-09-28T15:05:45Z",
+   "stats": {
+    "buildings": 60,
+    "roads": 124,
+    "roadAreas": 1,
+    "parks": 14,
+    "trees": 2,
+    "places": 0
+   }
+  },
+  {
+   "id": "1_2",
+   "i": 1,
+   "j": 2,
+   "bbox": {
+    "south": 31.775,
+    "west": 35.211,
+    "north": 31.78,
+    "east": 35.217
+   },
+   "file": "osm_1_2.json",
+   "bytes": 101477,
+   "fetchedAt": "2026-09-28T15:18:01Z",
+   "stats": {
+    "buildings": 279,
+    "roads": 170,
+    "roadAreas": 1,
+    "parks": 9,
+    "trees": 22,
+    "places": 0
+   }
+  },
+  {
+   "id": "2_2",
+   "i": 2,
+   "j": 2,
+   "bbox": {
+    "south": 31.775,
+    "west": 35.217,
+    "north": 31.78,
+    "east": 35.223
+   },
+   "file": "osm_2_2.json",
+   "bytes": 77326,
+   "fetchedAt": "2026-09-28T15:31:05Z",
+   "stats": {
+    "buildings": 102,
+    "roads": 217,
+    "roadAreas": 1,
+    "parks": 5,
+    "trees": 118,
+    "places": 0
+   }
+  },
+  {
+   "id": "3_2",
+   "i": 3,
+   "j": 2,
+   "bbox": {
+    "south": 31.775,
+    "west": 35.223,
+    "north": 31.78,
+    "east": 35.229
+   },
+   "file": "osm_3_2.json",
+   "bytes": 153195,
+   "fetchedAt": "2026-09-28T15:31:05Z",
+   "stats": {
+    "buildings": 314,
+    "roads": 282,
+    "roadAreas": 6,
+    "parks": 27,
+    "trees": 193,
+    "places": 0
+   }
+  },
+  {
+   "id": "4_2",
+   "i": 4,
+   "j": 2,
+   "bbox": {
+    "south": 31.775,
+    "west": 35.229,
+    "north": 31.78,
+    "east": 35.235
+   },
+   "file": "osm_4_2.json",
+   "bytes": 273953,
+   "fetchedAt": "2026-09-28T15:31:05Z",
+   "stats": {
+    "buildings": 1081,
+    "roads": 275,
+    "roadAreas": 6,
+    "parks": 24,
+    "trees": 88,
+    "places": 0
+   }
   }
  ],
  "places": [
@@ -368,6 +522,70 @@
    "nameEn": "Nahalat Shiva",
    "lat": 31.7807932,
    "lon": 35.2204395
+  },
+  {
+   "id": "n390305543",
+   "place": "suburb",
+   "name": "העיר העתיקה",
+   "nameEn": "Old City",
+   "lat": 31.7782872,
+   "lon": 35.2319526
+  },
+  {
+   "id": "n2710783597",
+   "place": "neighbourhood",
+   "name": "הרובע הנוצרי",
+   "nameEn": "Christian Quarter",
+   "lat": 31.7781395,
+   "lon": 35.2298739
+  },
+  {
+   "id": "n2081525620",
+   "place": "suburb",
+   "name": "נחלאות",
+   "nameEn": "Nahlaot",
+   "lat": 31.7831454,
+   "lon": 35.2123968
+  },
+  {
+   "id": "n11933331820",
+   "place": "suburb",
+   "name": "מגרש הרוסים",
+   "nameEn": "Russian Compound",
+   "lat": 31.7813648,
+   "lon": 35.223003
+  },
+  {
+   "id": "n2081525619",
+   "place": "suburb",
+   "name": "מורשה",
+   "nameEn": "Morasha",
+   "lat": 31.7820246,
+   "lon": 35.2260718
+  },
+  {
+   "id": "n2031059161",
+   "place": "suburb",
+   "name": "באב א-זהרה",
+   "nameEn": "Bab a-Zahara",
+   "lat": 31.7855769,
+   "lon": 35.2308087
+  },
+  {
+   "id": "n2710783600",
+   "place": "neighbourhood",
+   "name": "הרובע המוסלמי",
+   "nameEn": "Muslim Quarter",
+   "lat": 31.7812961,
+   "lon": 35.2328865
+  },
+  {
+   "id": "n8301476919",
+   "place": "neighbourhood",
+   "name": "הרובע המוסלמי",
+   "nameEn": "Muslim Quarter",
+   "lat": 31.7813443,
+   "lon": 35.2340681
   }
  ]
 }
