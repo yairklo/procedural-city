@@ -8,6 +8,7 @@
 //   node scripts/fetch_elevation.js --source open-elevation   # skip Open-Meteo
 //   node scripts/fetch_elevation.js --smooth 2.5              # Gaussian sigma in grid cells (0 = off)
 //   node scripts/fetch_elevation.js --mode points             # DEM control points (see below)
+//   node scripts/fetch_elevation.js --bbox 31.765,35.205,31.79,35.253   # south,west,north,east
 //
 // Sources, tried in order:
 //   1. Open-Meteo Elevation API: Copernicus DEM GLO-90 (3 arc-sec, ~90 m), CC BY 4.0
@@ -350,6 +351,12 @@ async function main(argv) {
   const source = arg('--source') ?? 'auto';
   if (!['auto', 'open-meteo', 'open-elevation'].includes(source)) throw new Error('--source must be auto, open-meteo or open-elevation');
   const smooth = Number(arg('--smooth') ?? 2.5);
+  let bbox = JERUSALEM_BBOX;
+  if (arg('--bbox')) {
+    const [south, west, north, east] = arg('--bbox').split(',').map(Number);
+    if (![south, west, north, east].every(Number.isFinite) || !(north > south && east > west)) throw new Error('--bbox must be south,west,north,east');
+    bbox = { south, west, north, east };
+  }
   if (!(smooth >= 0)) throw new Error('--smooth must be >= 0');
 
   if (mode === 'points') {
@@ -358,7 +365,7 @@ async function main(argv) {
     for (const name of order) {
       try {
         console.log(`[elevation] points mode via ${name}`);
-        doc = await fetchDemPoints(FETCHERS[name], JERUSALEM_BBOX);
+        doc = await fetchDemPoints(FETCHERS[name], bbox);
         break;
       } catch (err) {
         lastError = err;
@@ -375,7 +382,7 @@ async function main(argv) {
     return;
   }
 
-  const points = gridPoints(JERUSALEM_BBOX, size, size);
+  const points = gridPoints(bbox, size, size);
   console.log(`[elevation] sampling ${size} x ${size} = ${points.length} points`);
 
   let result;
@@ -391,7 +398,7 @@ async function main(argv) {
     }
   }
 
-  const doc = buildHeightmap(JERUSALEM_BBOX, size, size, result.values, result, { smooth });
+  const doc = buildHeightmap(bbox, size, size, result.values, result, { smooth });
   await mkdir(dirname(out), { recursive: true });
   const json = JSON.stringify(doc);
   await writeFile(out, json);

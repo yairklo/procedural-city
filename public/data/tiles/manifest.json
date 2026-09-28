@@ -1,0 +1,213 @@
+{
+ "format": "tiles-v1",
+ "source": "OpenStreetMap via Overpass API",
+ "license": "ODbL-1.0",
+ "attribution": "© OpenStreetMap contributors",
+ "grid": {
+  "south": 31.765,
+  "west": 35.205,
+  "dLat": 0.005,
+  "dLon": 0.006,
+  "tileMeters": {
+   "lat": 556,
+   "lon": 568
+  },
+  "note": "tile (i, j): lon [west + i*dLon, +dLon), lat [south + j*dLat, +dLat); i east, j north"
+ },
+ "worldBBox": {
+  "south": 31.765,
+  "west": 35.205,
+  "north": 31.79,
+  "east": 35.253
+ },
+ "projection": "createProjection(worldBBox) from src/city/geo.js: fixed origin at the world centre for every phase",
+ "elevation": "dem_points.json (dem-points-v1, covers worldBBox)",
+ "phases": {
+  "1": {
+   "name": "Rehavia, Talbiye, Hinnom Valley, Mount Zion",
+   "i": [
+    0,
+    4
+   ],
+   "j": [
+    0,
+    2
+   ]
+  },
+  "2": {
+   "name": "City centre, Old City, Kidron Valley (fills the rest of the world)",
+   "i": [
+    0,
+    7
+   ],
+   "j": [
+    0,
+    4
+   ]
+  }
+ },
+ "tiles": [
+  {
+   "id": "0_0",
+   "i": 0,
+   "j": 0,
+   "bbox": {
+    "south": 31.765,
+    "west": 35.205,
+    "north": 31.77,
+    "east": 35.211
+   },
+   "file": "osm_0_0.json",
+   "bytes": 85147,
+   "fetchedAt": "2026-09-28T14:11:06Z",
+   "stats": {
+    "buildings": 233,
+    "roads": 143,
+    "roadAreas": 0,
+    "parks": 10,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "1_0",
+   "i": 1,
+   "j": 0,
+   "bbox": {
+    "south": 31.765,
+    "west": 35.211,
+    "north": 31.77,
+    "east": 35.217
+   },
+   "file": "osm_1_0.json",
+   "bytes": 79508,
+   "fetchedAt": "2026-09-28T14:11:06Z",
+   "stats": {
+    "buildings": 210,
+    "roads": 138,
+    "roadAreas": 1,
+    "parks": 8,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "2_0",
+   "i": 2,
+   "j": 0,
+   "bbox": {
+    "south": 31.765,
+    "west": 35.217,
+    "north": 31.77,
+    "east": 35.223
+   },
+   "file": "osm_2_0.json",
+   "bytes": 65484,
+   "fetchedAt": "2026-05-06T03:25:00Z",
+   "stats": {
+    "buildings": 172,
+    "roads": 137,
+    "roadAreas": 1,
+    "parks": 6,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "3_0",
+   "i": 3,
+   "j": 0,
+   "bbox": {
+    "south": 31.765,
+    "west": 35.223,
+    "north": 31.77,
+    "east": 35.229
+   },
+   "file": "osm_3_0.json",
+   "bytes": 83979,
+   "fetchedAt": "2026-09-28T14:32:46Z",
+   "stats": {
+    "buildings": 105,
+    "roads": 245,
+    "roadAreas": 3,
+    "parks": 8,
+    "trees": 20,
+    "places": 0
+   }
+  }
+ ],
+ "places": [
+  {
+   "id": "n278474182",
+   "place": "suburb",
+   "name": "בקעה",
+   "nameEn": "Baka",
+   "lat": 31.7595534,
+   "lon": 35.2196723
+  },
+  {
+   "id": "n2081525628",
+   "place": "suburb",
+   "name": "טלביה",
+   "nameEn": "Talbiyeh",
+   "lat": 31.7708162,
+   "lon": 35.2176794
+  },
+  {
+   "id": "n2081525608",
+   "place": "suburb",
+   "name": "המושבה הגרמנית",
+   "nameEn": "German Colony",
+   "lat": 31.7643906,
+   "lon": 35.2205513
+  },
+  {
+   "id": "n9493856826",
+   "place": "suburb",
+   "name": "גבעת חנניה",
+   "nameEn": "Givat Hananya",
+   "lat": 31.7651593,
+   "lon": 35.2278129
+  },
+  {
+   "id": "n3758652381",
+   "place": "suburb",
+   "name": "ימין משה",
+   "nameEn": "Yemin Moshe",
+   "lat": 31.7721407,
+   "lon": 35.2249574
+  },
+  {
+   "id": "n2710783599",
+   "place": "neighbourhood",
+   "name": "Հայկական Թաղամաս",
+   "nameEn": "Armenian Quarter",
+   "lat": 31.7750201,
+   "lon": 35.2290826
+  },
+  {
+   "id": "n11915685852",
+   "place": "suburb",
+   "name": "מחנה ישראל",
+   "nameEn": "Mahane Israel",
+   "lat": 31.7756391,
+   "lon": 35.22057
+  },
+  {
+   "id": "n2710783598",
+   "place": "neighbourhood",
+   "name": "הרובע היהודי",
+   "nameEn": "Jewish Quarter",
+   "lat": 31.7753539,
+   "lon": 35.2317629
+  },
+  {
+   "id": "n278475869",
+   "place": "suburb",
+   "name": "أبو طور",
+   "nameEn": "Abu Tor",
+   "lat": 31.7645177,
+   "lon": 35.2324444
+  }
+ ]
+}
