@@ -8,6 +8,7 @@ import { createTerrain } from '../src/city/terrain.js';
 import { CityCollisionWorld } from '../src/city/CityCollision.js';
 import { buildLandmarks } from '../src/city/landmarks/LandmarkLayer.js';
 import { pointInRings, distanceToEdges } from '../src/city/footprint.js';
+import * as THREE from 'three';
 
 const read = (p) => JSON.parse(readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8'));
 const manifest = read('../public/data/tiles/manifest.json');
@@ -129,5 +130,37 @@ test('landmarks: the Haram buildings, the raised platform and its stairs', () =>
   }
   assert.ok(Math.abs(y - upper.y) < 0.3, `reached the platform (${ASL(y).toFixed(2)} m)`);
   assert.ok(climbed > 3.5);
+  lm.dispose();
+});
+
+test('landmarks: the roofs of the Dome of the Rock and al-Aqsa face the sky (seen from above)', () => {
+  const lm = buildLandmarks(landmarks, { projection, terrain, collision: null, uniforms: { uNight: { value: 0 } } });
+  const mesh = lm.group.getObjectByName('Landmark(Haram)');
+  mesh.updateMatrixWorld(true);
+  const ray = new THREE.Raycaster();
+  const hitTop = (x, z) => {
+    ray.set(new THREE.Vector3(x, 1e4, z), new THREE.Vector3(0, -1, 0));
+    return ray.intersectObject(mesh)[0] ?? null; // front faces only (FrontSide material)
+  };
+  const h = landmarks.haram;
+  // Dome of the Rock: every direction, between the drum and the octagon's parapet, hits the
+  // lead roof (not the platform inside the walls).
+  const ring = projection.projectFlat(h.domeOfTheRock.ring);
+  const c = centroid(ring);
+  const upper = terrain.patches.find((p) => p.name === 'Dome of the Rock platform');
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * Math.PI * 2;
+    const hit = hitTop(c.x + Math.cos(a) * 17, c.z + Math.sin(a) * 17);
+    assert.ok(hit && hit.point.y > upper.y + 12, `roof at ${k}: ${hit ? (hit.point.y - upper.y).toFixed(1) : 'nothing'} m`);
+    assert.ok(hit.face.normal.y > 0.5, 'facing up');
+  }
+  // al-Aqsa: the nave roof is hit from above on both slopes.
+  const aqsa = centroid(projection.projectFlat(h.aqsa.ring));
+  let roofHits = 0;
+  for (let dx = -8; dx <= 8; dx += 1) {
+    const hit = hitTop(aqsa.x + dx, aqsa.z - 10);
+    if (hit && hit.face.normal.y > 0.3) roofHits++;
+  }
+  assert.ok(roofHits >= 15, `${roofHits}/17 samples hit a roof`);
   lm.dispose();
 });

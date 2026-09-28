@@ -343,7 +343,11 @@ export function buildHaram(haram, ctx) {
       const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
       const e = (a) => { const t = rayRing(ring, c.x, c.z, Math.cos(a), Math.sin(a)) ?? R; return [c.x + Math.cos(a) * (t - 0.4), band, c.z + Math.sin(a) * (t - 0.4)]; };
       const d = (a) => [c.x + Math.cos(a) * drumR, band + 1.4, c.z + Math.sin(a) * drumR];
-      m.quad(e(a0), e(a1), d(a1), d(a0), null);
+      // Explicit normal (up, tilted outward: the roof rises toward the drum), so the quad is
+      // wound to face the sky whatever order its corners come in.
+      const am = (a0 + a1) / 2, k = 1.4 / Math.max(R - drumR, 1);
+      const nl = Math.hypot(k, 1);
+      m.quad(e(a0), e(a1), d(a1), d(a0), [(Math.cos(am) * k) / nl, 1 / nl, (Math.sin(am) * k) / nl]);
     }
     // Drum: tiled, 16 windows, a dark band of inscription tiles at the top.
     m.paint(C.tileBlue, 1, 1, STYLE.tile);
@@ -456,7 +460,12 @@ export function buildHaram(haram, ctx) {
       m.paint(C.lead, 1, 1, STYLE.lead);
       const ridge = wallTop + 6.6, eave = wallTop + 4.1;
       const P = (s, t, y) => [mx + ax * s + f.ux * t, y, mz + az * s + f.uz * t];
-      for (const side of [-1, 1]) m.quad(P(0, side * (hw + 0.3), eave), P(naveL, side * (hw + 0.3), eave), P(naveL, 0, ridge), P(0, 0, ridge), null);
+      for (const side of [-1, 1]) {
+        // Up and out toward this side's eave (explicit, so the roof faces the sky).
+        const rise = ridge - eave, run = hw + 0.3, nl = Math.hypot(rise, run);
+        const n = [(f.ux * side * rise) / nl, run / nl, (f.uz * side * rise) / nl];
+        m.quad(P(0, side * (hw + 0.3), eave), P(naveL, side * (hw + 0.3), eave), P(naveL, 0, ridge), P(0, 0, ridge), n);
+      }
       m.paint(C.stone, 0.5, 1.1, STYLE.ashlar);
       m.tri(P(0, -hw, eave), P(0, hw, eave), P(0, 0, ridge), [f.nx, 0, f.nz]);
       addBox({ minX: Math.min(P(0, -hw, 0)[0], P(naveL, hw, 0)[0], P(0, hw, 0)[0], P(naveL, -hw, 0)[0]), maxX: Math.max(P(0, -hw, 0)[0], P(naveL, hw, 0)[0], P(0, hw, 0)[0], P(naveL, -hw, 0)[0]),
