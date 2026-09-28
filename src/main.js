@@ -8,6 +8,7 @@ import { createBenchmark, formatBenchmark } from './debug/benchmark.js';
 import { PlayerController } from './player/PlayerController.js';
 import { PlayerCamera } from './player/PlayerCamera.js';
 import { PlayerProxy } from './player/PlayerProxy.js';
+import { CharacterModel } from './player/CharacterModel.js';
 import { GlideEffects } from './player/GlideEffects.js';
 import { FreeCamera } from './player/FreeCamera.js';
 import { RoadNetwork } from './city/RoadNetwork.js';
@@ -67,6 +68,18 @@ const proxy = new PlayerProxy();
 const glideFx = new GlideEffects();
 scene.add(proxy.object3D, glideFx.object3D);
 proxy.object3D.traverse((o) => o.material && lighting.setupMaterial(o.material));
+// The rigged character replaces the capsule stand-in once it has loaded.
+const character = new CharacterModel();
+/** @type {PlayerProxy | CharacterModel} */
+let avatar = proxy;
+character.load(`${import.meta.env.BASE_URL}models/character.glb`)
+  .then(() => {
+    for (const m of character.materials()) lighting.setupMaterial(m);
+    scene.remove(proxy.object3D);
+    scene.add(character.object3D);
+    avatar = character;
+  })
+  .catch((err) => console.warn('[character] model failed to load, keeping the stand-in:', err.message));
 const freeCam = new FreeCamera(camera, renderer.domElement);
 const wind = new WindAudio();
 const benchHud = new BenchmarkHUD(document.body);
@@ -169,6 +182,7 @@ async function loadWorld() {
   hud.textContent = 'Loading Jerusalem…';
   const spawn = await world.findSpawn();
   player = new PlayerController(world.collision, spawn);
+  character.bind(player);
   playerCamera ??= new PlayerCamera(camera, renderer.domElement, world.collision);
   playerCamera.setCollision(world.collision);
   player.on('land', (e) => {
@@ -188,7 +202,7 @@ async function loadWorld() {
   // Handy for debugging from the devtools console.
   window.world = world;
   window.debug = {
-    camera, playerCamera, player, proxy, scene, renderer, lighting, post, world, pedestrians, traffic, freeCam, wind,
+    camera, playerCamera, player, proxy, character, scene, renderer, lighting, post, world, pedestrians, traffic, freeCam, wind,
     setNight: (v) => { night = nightTarget = v; applyLook(v); },
   };
   console.info('[world]', world.stats(), `legacy: ${world.legacy ? `${world.legacy.kept} features kept, ${world.legacy.skipped} superseded by tiles` : 'none'}`);
@@ -338,7 +352,7 @@ renderer.setAnimationLoop(() => {
   if (player) {
     if (!flying) player.update(dt, readInput());
     snap = player.snapshot();
-    proxy.update(snap, dt);
+    avatar.update(snap, dt);
     glideFx.update(snap, dt);
     wind.update(flying ? { speed: 0, state: 'ground' } : snap);
     if (freeCam.enabled) freeCam.update(dt, held);
