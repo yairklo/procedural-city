@@ -4,6 +4,7 @@ import { CityGenerator, findRoadsAt, findPlaceAt } from './city/CityGenerator.js
 import { createLighting } from './render/lighting.js';
 import { createPostProcessing } from './render/postprocessing.js';
 import { createSurroundings } from './render/surroundings.js';
+import { createBenchmark, formatBenchmark } from './debug/benchmark.js';
 import './style.css';
 
 // ------------------------------------------------------------------------------------------------
@@ -172,13 +173,17 @@ async function loadData() {
 function buildCity({ osm, elevation }) {
   if (city) {
     scene.remove(city.group);
-    city.group.traverse((o) => o.material && lighting.releaseMaterial(o.material));
+    city.group.traverse((o) => o.material && [o.material].flat().forEach((m) => lighting.releaseMaterial(m)));
     city.dispose();
   }
   city = new CityGenerator({ osm, elevation }).create();
   surroundings.setBaseHeight(city.data.terrain.meanEdge);
   scene.add(city.group);
-  city.group.traverse((o) => o.material && lighting.setupMaterial(o.material));
+  city.group.traverse((o) => {
+    if (!o.material) return;
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) lighting.setupMaterial(m);
+    if (o.userData.detail) lighting.nearShadowsOnly(o);
+  });
   city.setNight(night);
   respawn();
 
@@ -255,6 +260,11 @@ window.addEventListener('resize', onResize);
 
 const timer = new THREE.Clock();
 
+// ?bench runs a fixed camera benchmark (add &night for the night look).
+const params = new URLSearchParams(window.location.search);
+const bench = params.has('bench') ? createBenchmark({ camera, controls, renderer }) : null;
+if (params.has('night')) night = nightTarget = 1;
+
 applyLook(night);
 loadData()
   .then(buildCity)
@@ -271,12 +281,22 @@ renderer.setAnimationLoop(() => {
     applyLook(night);
   }
 
-  updatePlayer(dt);
-  followCamera();
-  controls.update();
+  if (bench && city && !bench.running && !bench.result) bench.start(city.data.spawn);
+  const benchFrame = bench?.running ? bench.update() : null;
+  if (!benchFrame) {
+    updatePlayer(dt);
+    followCamera();
+    controls.update();
+  }
   lighting.update();
   surroundings.update(camera);
+  city?.update(camera);
   renderer.info.reset();
   post.render(dt);
-  updateHud(dt);
+  if (benchFrame) {
+    bench.record(benchFrame);
+    if (bench.result) hud.innerHTML = formatBenchmark(bench.result);
+  } else if (!bench?.result) {
+    updateHud(dt);
+  }
 });

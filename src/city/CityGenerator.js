@@ -58,6 +58,10 @@ export const DEFAULT_CITY_OPTIONS = Object.freeze({
 
   // Engine
   chunkSize: 500,
+  // Rooftop props use smaller chunks so whole chunks beyond propDrawDistance can be hidden
+  // (a 1 m prop there is ~2 px). See the view's update(camera).
+  propChunkSize: 250,
+  propDrawDistance: 450,
   collisionCellSize: 16,
   collisionStep: 0.6, // strip width used to turn footprints into AABBs (max wall error = step / 2)
   groundMargin: 150,
@@ -462,24 +466,28 @@ export class CityGenerator {
     const width = bounds.maxX - bounds.minX + margin * 2, depth = bounds.maxZ - bounds.minZ + margin * 2;
     const cx = (bounds.minX + bounds.maxX) / 2, cz = (bounds.minZ + bounds.maxZ) / 2;
 
-    // Ground: one terrain mesh. Stone-slab sidewalks over the data area (+ margin), dry land
-    // with the rest of the city's lights beyond it (two material groups, two draw calls). It
-    // extends past the heightmap far enough for the terrain to ease back to its mean edge
+    // Ground: a detailed terrain grid (8 m) with stone paving over the data area + margin,
+    // and a coarse one (32 m) for the surroundings, with the rest of the city's lights. The
+    // coarse grid runs under the detailed one, 0.3 m lower, so there is no seam to stitch.
+    // It extends past the heightmap far enough for the terrain to ease back to its mean edge
     // height, where a large flat plane takes over to the horizon.
     const { terrain } = data;
     const inner = { minX: bounds.minX - margin, maxX: bounds.maxX + margin, minZ: bounds.minZ - margin, maxZ: bounds.maxZ + margin };
     const reach = terrain.flat ? 200 : 700;
     const terrainMesh = add(new THREE.Mesh(
-      track(terrainGeometry(terrain, {
-        minX: inner.minX - reach, maxX: inner.maxX + reach, minZ: inner.minZ - reach, maxZ: inner.maxZ + reach,
-      }, inner, terrain.flat ? 50 : 8)),
-      [
-        track(createSurfaceMaterial('paving', COLORS.ground, { roughness: 0.9, uniforms })),
-        track(createOuterGroundMaterial(uniforms, bounds)),
-      ],
+      track(terrainGeometry(terrain, inner, terrain.flat ? 50 : 8, 0)),
+      track(createSurfaceMaterial('paving', COLORS.ground, { roughness: 0.9, uniforms })),
     ));
     terrainMesh.name = 'Terrain';
     terrainMesh.receiveShadow = true;
+    const surroundingsMesh = add(new THREE.Mesh(
+      track(terrainGeometry(terrain, {
+        minX: inner.minX - reach, maxX: inner.maxX + reach, minZ: inner.minZ - reach, maxZ: inner.maxZ + reach,
+      }, terrain.flat ? 200 : 32, -0.3)),
+      track(createOuterGroundMaterial(uniforms, bounds)),
+    ));
+    surroundingsMesh.name = 'TerrainSurroundings';
+    surroundingsMesh.receiveShadow = true;
     const outer = add(new THREE.Mesh(
       track(new THREE.PlaneGeometry(width + 8000, depth + 8000).rotateX(-Math.PI / 2).translate(cx, terrain.meanEdge - 0.4, cz)),
       track(createOuterGroundMaterial(uniforms, bounds)),
@@ -505,7 +513,7 @@ export class CityGenerator {
       geos[r.surface].push(r.rings ? flatPolygonGeometry(r.rings, 0) : ribbonGeometry(r.points, r.width / 2, 0));
       if (r.surface !== 'asphalt' || !r.points) continue;
       // A curb-stone band just outside the carriageway, and a dashed center line on wider roads.
-      geos.curb.push(ribbonGeometry(r.points, r.width / 2 + CURB_WIDTH, 0));
+      geos.curb.push(curbGeometry(r.points, r.width / 2, CURB_WIDTH));
       if (r.width >= 8) geos.marking.push(dashedLineGeometry(r.points, 0.07, 3, 4));
     }
     layer('Paving', geos.paving, createSurfaceMaterial('paving', COLORS.paving, { offset: -7, uniforms }), 0.04);
@@ -535,23 +543,22 @@ export class CityGenerator {
     // Rooftop details: "dud shemesh" solar water heaters (white tank + tilted collector) and AC units.
     const { solar, ac } = data.roofProps;
     const inst = (items, opts) => addAll(buildChunkedInstances(items, { origin, chunkSize: o.chunkSize, castShadow: true, receiveShadow: true, ...opts }));
-    const tankGeo = track(new THREE.CylinderGeometry(1, 1, 1, 10).translate(0, 0.5, 0));
     const boxBottom = track(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0));
-    const boxCenter = track(new THREE.BoxGeometry(1, 1, 1));
-    inst(solar.map((s) => ({ x: s.x, y: s.y, z: s.z - 0.75, sx: 0.33, sy: 1.95, sz: 0.33, color: COLORS.solarTank })), {
-      name: 'SolarTanks', geometry: tankGeo,
-      material: track(new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.1 })),
-    });
-    inst(solar.map((s) => ({ x: s.x, y: s.y + 0.35 + Math.sin(SOLAR_TILT) * 0.8, z: s.z + 0.3, sx: 0.95, sy: 0.05, sz: 1.6, rx: SOLAR_TILT, color: COLORS.solarPanel })), {
-      name: 'SolarPanels', geometry: boxCenter,
-      material: track(new THREE.MeshStandardMaterial({ roughness: 0.25, metalness: 0.6 })),
-    });
-    inst(solar.map((s) => ({ x: s.x, y: s.y, z: s.z + 0.3, sx: 0.85, sy: 0.35, sz: 1.1, color: COLORS.solarFrame })), {
-      name: 'SolarFrames', geometry: boxBottom,
-      material: track(new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.4 })),
+    // Rooftop props are tagged userData.detail: they are hidden per chunk beyond
+    // propDrawDistance, and the renderer may skip them in far shadow cascades (they are ~95%
+    // of all shadow-casting triangles, and invisible there anyway).
+    const propOrigin = {
+      x: bounds.minX, z: bounds.minZ,
+      nx: Math.max(1, Math.round((bounds.maxX - bounds.minX) / o.propChunkSize)),
+      nz: Math.max(1, Math.round((bounds.maxZ - bounds.minZ) / o.propChunkSize)),
+    };
+    const detailOpts = { detail: true, origin: propOrigin, chunkSize: o.propChunkSize };
+    inst(solar.map((s) => ({ x: s.x, y: s.y, z: s.z, sx: 1, sy: 1, sz: 1, color: 0xffffff })), {
+      name: 'SolarHeaters', geometry: track(solarHeaterGeometry()), ...detailOpts,
+      material: track(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, metalness: 0.25 })),
     });
     inst(ac.map((a) => ({ x: a.x, y: a.y, z: a.z, sx: a.w, sy: a.h, sz: a.d, ry: a.yaw, color: COLORS.ac })), {
-      name: 'AcUnits', geometry: boxBottom,
+      name: 'AcUnits', geometry: boxBottom, ...detailOpts,
       material: track(new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.2 })),
     });
 
@@ -574,11 +581,20 @@ export class CityGenerator {
     });
     group.updateMatrixWorld(true);
 
+    const detailMeshes = [];
+    group.traverse((obj) => obj.userData.detail && detailMeshes.push(obj));
+    const drawDist2 = o.propDrawDistance * o.propDrawDistance;
+
     return {
       group,
       uniforms,
       setNight(v) {
         uniforms.uNight.value = v;
+      },
+      /** Per frame: hides rooftop-prop chunks farther than propDrawDistance from the camera. */
+      update(camera) {
+        const p = camera.position;
+        for (const m of detailMeshes) m.visible = m.boundingBox.distanceToPoint(p) ** 2 < drawDist2;
       },
       dispose() {
         for (const d of disposables) d.dispose();
@@ -597,6 +613,30 @@ export class CityGenerator {
 // -----------------------------------------------------------------------------------------------
 
 const SOLAR_TILT = (40 * Math.PI) / 180;
+
+/**
+ * One "dud shemesh" as a single merged geometry (so one InstancedMesh draws the whole unit),
+ * facing south (+Z), anchored at roof level: white 6-sided tank at the back, a dark collector
+ * tilted 40° in front of it, and a gray frame under the collector. Colors are per vertex.
+ */
+function solarHeaterGeometry() {
+  const part = (geo, hex) => {
+    const g = geo.toNonIndexed();
+    geo.dispose();
+    g.deleteAttribute('uv');
+    const c = new THREE.Color(hex);
+    const col = new Float32Array(g.getAttribute('position').count * 3);
+    for (let i = 0; i < col.length; i += 3) { col[i] = c.r; col[i + 1] = c.g; col[i + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return g;
+  };
+  const tank = part(new THREE.CylinderGeometry(0.33, 0.33, 1.95, 6, 1, false).translate(0, 0.975, -0.75), COLORS.solarTank);
+  const panel = part(new THREE.BoxGeometry(0.95, 0.05, 1.6).rotateX(SOLAR_TILT).translate(0, 0.35 + Math.sin(SOLAR_TILT) * 0.8, 0.3), COLORS.solarPanel);
+  const frame = part(new THREE.BoxGeometry(0.85, 0.35, 1.1).translate(0, 0.175, 0.3), COLORS.solarFrame);
+  const merged = mergeGeometries([tank, panel, frame], false);
+  for (const g of [tank, panel, frame]) g.dispose();
+  return merged;
+}
 // Footprint of one solar water heater relative to its anchor (tank behind, collector in front,
 // facing south = +Z). Used for placement and as its collision box.
 const SOLAR_BOX = { minX: -0.5, maxX: 0.5, minZ: -1.1, maxZ: 0.95, height: 1.95 };
@@ -768,7 +808,7 @@ const chunkKey = (x, z, origin, size) =>
  *
  * Item shape: { x, y, z, sx, sy, sz, color, rx?, ry? } (rx = pitch, ry = yaw, radians)
  */
-function buildChunkedInstances(items, { geometry, material, chunkSize, origin, name, castShadow = false, receiveShadow = false }) {
+function buildChunkedInstances(items, { geometry, material, chunkSize, origin, name, castShadow = false, receiveShadow = false, detail = false }) {
   const chunks = new Map();
   for (const it of items) {
     const key = chunkKey(it.x, it.z, origin, chunkSize);
@@ -794,6 +834,7 @@ function buildChunkedInstances(items, { geometry, material, chunkSize, origin, n
     mesh.computeBoundingSphere();
     mesh.castShadow = castShadow;
     mesh.receiveShadow = receiveShadow;
+    mesh.userData.detail = detail;
     meshes.push(mesh);
   }
   return { meshes, geometries: [] };
@@ -887,11 +928,8 @@ function ribbonGeometry(points, hw, y) {
 
 const CURB_WIDTH = 0.3;
 
-/**
- * Regular grid over `rect` following the terrain, with smooth normals. Triangles whose
- * cell center lies inside `inner` form group 0, the rest group 1.
- */
-function terrainGeometry(terrain, rect, inner, spacing) {
+/** Regular grid over `rect` following the terrain (+ yOffset), with smooth terrain normals. */
+function terrainGeometry(terrain, rect, spacing, yOffset) {
   const nx = Math.max(1, Math.round((rect.maxX - rect.minX) / spacing));
   const nz = Math.max(1, Math.round((rect.maxZ - rect.minZ) / spacing));
   const sx = (rect.maxX - rect.minX) / nx, sz = (rect.maxZ - rect.minZ) / nz;
@@ -901,27 +939,24 @@ function terrainGeometry(terrain, rect, inner, spacing) {
     for (let i = 0; i <= nx; i++, k += 3) {
       const x = rect.minX + i * sx, z = rect.minZ + j * sz;
       pos[k] = x;
-      pos[k + 1] = terrain.heightAt(x, z);
+      pos[k + 1] = terrain.heightAt(x, z) + yOffset;
       pos[k + 2] = z;
       const n = terrainNormal(terrain, x, z);
       nrm[k] = n[0]; nrm[k + 1] = n[1]; nrm[k + 2] = n[2];
     }
   }
-  const innerIdx = [], outerIdx = [];
-  for (let j = 0; j < nz; j++) {
-    for (let i = 0; i < nx; i++) {
+  const index = new (pos.length / 3 > 65535 ? Uint32Array : Uint16Array)(nx * nz * 6);
+  for (let j = 0, k = 0; j < nz; j++) {
+    for (let i = 0; i < nx; i++, k += 6) {
       const a = j * (nx + 1) + i, b = a + 1, c = a + nx + 1, d = c + 1;
-      const cx = rect.minX + (i + 0.5) * sx, cz = rect.minZ + (j + 0.5) * sz;
-      const list = cx > inner.minX && cx < inner.maxX && cz > inner.minZ && cz < inner.maxZ ? innerIdx : outerIdx;
-      list.push(a, c, b, b, c, d); // counter-clockwise seen from above
+      index[k] = a; index[k + 1] = c; index[k + 2] = b; // counter-clockwise seen from above
+      index[k + 3] = b; index[k + 4] = c; index[k + 5] = d;
     }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
-  g.setIndex([...innerIdx, ...outerIdx]);
-  g.addGroup(0, innerIdx.length, 0);
-  g.addGroup(innerIdx.length, outerIdx.length, 1);
+  g.setIndex(new THREE.BufferAttribute(index, 1));
   g.computeBoundingSphere();
   return g;
 }
@@ -981,6 +1016,42 @@ function drapeGeometry(geometry, terrain, lift, maxEdge) {
   g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   g.computeBoundingSphere();
   return g;
+}
+
+/**
+ * Curb stones: two thin bands along the outer edges of a carriageway of half-width `hw`,
+ * with ring segments around each vertex so corners and ends stay closed. Only the band is
+ * built (the carriageway itself is drawn by the road ribbon on top).
+ */
+function curbGeometry(points, hw, w) {
+  const sink = new TriangleSink();
+  const n = points.length / 2;
+  const r0 = hw, r1 = hw + w;
+  for (let i = 0; i < n - 1; i++) {
+    const ax = points[i * 2], az = points[i * 2 + 1], bx = points[i * 2 + 2], bz = points[i * 2 + 3];
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 1e-3) continue;
+    const px = -(bz - az) / len, pz = (bx - ax) / len;
+    for (const side of [1, -1]) {
+      const i0 = [ax + px * r0 * side, 0, az + pz * r0 * side], o0 = [ax + px * r1 * side, 0, az + pz * r1 * side];
+      const i1 = [bx + px * r0 * side, 0, bz + pz * r0 * side], o1 = [bx + px * r1 * side, 0, bz + pz * r1 * side];
+      sink.tri(i0, o0, o1, UP);
+      sink.tri(i0, o1, i1, UP);
+    }
+  }
+  const SEG = 10;
+  for (let i = 0; i < n; i++) {
+    const x = points[i * 2], z = points[i * 2 + 1];
+    for (let k = 0; k < SEG; k++) {
+      const t0 = (k / SEG) * Math.PI * 2, t1 = ((k + 1) / SEG) * Math.PI * 2;
+      const c0 = Math.cos(t0), s0 = Math.sin(t0), c1 = Math.cos(t1), s1 = Math.sin(t1);
+      const a = [x + c0 * r0, 0, z + s0 * r0], b = [x + c0 * r1, 0, z + s0 * r1];
+      const c = [x + c1 * r1, 0, z + s1 * r1], d = [x + c1 * r0, 0, z + s1 * r0];
+      sink.tri(a, b, c, UP);
+      sink.tri(a, c, d, UP);
+    }
+  }
+  return sink.geometry();
 }
 
 /** Thin dashes centered on a polyline (lane markings). */

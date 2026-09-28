@@ -14,6 +14,27 @@ npm run build
 
 Controls: WASD move · Shift sprint · Space jump · E boost jump (reach rooftops) · drag to orbit · N day/night · P post-processing on/off · R respawn.
 
+## Performance
+
+Open the app with `?bench` (or `?bench&night`) to run a fixed 24-second camera benchmark:
+street level, rooftop level and aerial orbits around the spawn point. The HUD then shows,
+per phase, average fps, median / p95 frame time, 1% lows, draw calls and triangles per
+frame, plus the GPU name. The same numbers are on `window.benchResult`. The in-editor
+preview pane throttles frames, so measure in a normal browser tab on the target machine.
+
+Budget per frame (all passes: 4 shadow cascades, AO normal pass, main pass), measured on the
+real data: about 175 draw calls and 1.9M triangles (was 356 / 6.8M before the performance
+pass). The main pass alone is about 37 draw calls. What keeps it there:
+
+- Rooftop props (8k solar heaters, 5.7k AC units) were ~95% of shadow-casting triangles.
+  Each heater is one merged instanced geometry (6-sided tank + collector + frame). Props sit
+  in 250 m chunks that are hidden beyond 450 m, and they cast shadows only in the two
+  nearest cascades.
+- GTAO runs at half resolution and doesn't re-render the shadow maps for its normal pass.
+- Terrain: an 8 m grid only over the city, 32 m for the surroundings. Curbs are thin edge
+  bands, not full-width ribbons.
+- Terrain lookups read a pre-baked 2 m bicubic grid; city build takes about 1.4 s in total.
+
 ## Data
 
 `scripts/fetch_jerusalem.js` queries the Overpass API once for `building=*` (ways and
@@ -40,8 +61,7 @@ before a commercial release.
   - `build()`: extrudes the real footprint shapes (walls, flat roofs, canopy undersides),
     merges them per 500 m chunk with `BufferGeometryUtils.mergeGeometries`, renders roads
     as ribbons along OSM lines, and draws solar water heaters (dud shemesh), AC units and
-    trees as chunked `InstancedMesh`es. About 45 meshes in the scene. Counting
-    the shadow cascades and the AO normal pass, a frame is roughly 350 draw calls.
+    trees as chunked `InstancedMesh`es (see Performance).
   - Jerusalem stone material: `MeshStandardMaterial` (limestone `#E4D8C8` to `#D6C5B2`,
     roughness 0.85) extended in the shader, in world space on any wall direction (no UVs):
     36 cm masonry courses with mortar joints, bevelled and chiselled block relief (normal
@@ -65,7 +85,7 @@ before a commercial release.
   silhouette with scattered lit windows by night. A night sky dome has an orange
   light-pollution horizon and a few stars. At night the land between them fills with
   street lights (outer-ground shader).
-- `src/city/terrain.js`: `heightAt(x, z)`, bilinear over the heightmap. The datum is the
+- `src/city/terrain.js`: `heightAt(x, z)`, bicubic (Catmull-Rom) over the heightmap, pre-baked to a 2 m grid. The datum is the
   lowest sample, so y = 0 is 767 m above sea level. Outside the grid, heights ease to the
   mean edge height. Buildings stand on the lowest ground under their footprint, with
   foundations 0.6 m below it. Floors count from there and the roof line from the highest

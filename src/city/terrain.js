@@ -1,6 +1,6 @@
 // Terrain from the elevation heightmap written by scripts/fetch_elevation.js.
 //
-// heightAt(x, z) returns the ground height in game meters (bilinear over the grid). The
+// heightAt(x, z) returns the ground height in game meters (bicubic over the grid). The
 // datum is the lowest sample, so the terrain is always >= 0; add `datum` to get meters
 // above sea level. Outside the heightmap the edge values are extended and, further out,
 // eased toward the mean edge height, so the landscape doesn't end in a cliff.
@@ -26,9 +26,11 @@ export const FLAT_TERRAIN = Object.freeze({
  * @param {object} heightmap  JSON with { bbox, width, height, values } (row 0 = north, col 0 = west,
  *                            samples on cell corners, edges inclusive)
  * @param {ReturnType<import('./geo.js').createProjection>} projection
- * @param {{ fadeDistance?: number }} [options]  distance outside the grid over which heights ease to the mean edge height
+ * @param {{ fadeDistance?: number, bakeSpacing?: number }} [options]
+ *   fadeDistance: distance outside the grid over which heights ease to the mean edge height
+ *   bakeSpacing: meters between samples of the pre-baked bicubic surface
  */
-export function createTerrain(heightmap, projection, { fadeDistance = 500 } = {}) {
+export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeSpacing = 2 } = {}) {
   const { width: W, height: H, values, bbox } = heightmap;
   if (!(W >= 2 && H >= 2) || values?.length !== W * H) throw new Error('createTerrain: malformed heightmap');
 
@@ -50,14 +52,38 @@ export function createTerrain(heightmap, projection, { fadeDistance = 500 } = {}
   const se = projection.project(bbox.south, bbox.east);
   const x0 = nw.x, z0 = nw.z, dx = (se.x - nw.x) / (W - 1), dz = (se.z - nw.z) / (H - 1);
 
-  function sample(x, z) {
-    const fc = clamp((x - x0) / dx, 0, W - 1);
-    const fr = clamp((z - z0) / dz, 0, H - 1);
+  // Bicubic (Catmull-Rom) interpolation: the slope is continuous across grid cells, so the
+  // ground has no creases along the grid lines (bilinear leaves visible facets).
+  const at = (c, r) => grid[clamp(r, 0, H - 1) * W + clamp(c, 0, W - 1)];
+  const cr = (p0, p1, p2, p3, t) =>
+    p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+
+  function bicubic(fc, fr) {
     const c = Math.min(W - 2, Math.floor(fc)), r = Math.min(H - 2, Math.floor(fr));
     const tx = fc - c, tz = fr - r;
-    const i = r * W + c;
-    const a = grid[i] + (grid[i + 1] - grid[i]) * tx;
-    const b = grid[i + W] + (grid[i + W + 1] - grid[i + W]) * tx;
+    const row = (rr) => cr(at(c - 1, rr), at(c, rr), at(c + 1, rr), at(c + 2, rr), tx);
+    return cr(row(r - 1), row(r), row(r + 1), row(r + 2), tz);
+  }
+
+  // heightAt() is called millions of times while building the city, so the bicubic surface is
+  // baked once into a fine grid (~bakeSpacing meters) and then read bilinearly. At a few
+  // meters per cell that is indistinguishable from evaluating the bicubic directly.
+  const BW = Math.max(2, Math.ceil(Math.abs(se.x - nw.x) / bakeSpacing) + 1);
+  const BH = Math.max(2, Math.ceil(Math.abs(se.z - nw.z) / bakeSpacing) + 1);
+  const baked = new Float32Array(BW * BH);
+  for (let r = 0; r < BH; r++) {
+    for (let c = 0; c < BW; c++) baked[r * BW + c] = bicubic((c / (BW - 1)) * (W - 1), (r / (BH - 1)) * (H - 1));
+  }
+  const bdx = (se.x - nw.x) / (BW - 1), bdz = (se.z - nw.z) / (BH - 1);
+
+  function sample(x, z) {
+    const fc = clamp((x - x0) / bdx, 0, BW - 1);
+    const fr = clamp((z - z0) / bdz, 0, BH - 1);
+    const c = Math.min(BW - 2, fc | 0), r = Math.min(BH - 2, fr | 0);
+    const tx = fc - c, tz = fr - r;
+    const i = r * BW + c;
+    const a = baked[i] + (baked[i + 1] - baked[i]) * tx;
+    const b = baked[i + BW] + (baked[i + BW + 1] - baked[i + BW]) * tx;
     return a + (b - a) * tz;
   }
 

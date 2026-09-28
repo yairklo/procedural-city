@@ -25,7 +25,12 @@ export function createPostProcessing(renderer, scene, camera) {
 
   composer.addPass(new RenderPass(scene, camera));
 
-  const gtao = new GTAOPass(scene, camera, size.x, size.y);
+  // AO is low-frequency: compute it at half resolution (a quarter of the pixels), then the
+  // denoised result is blended onto the full-resolution image.
+  const AO_SCALE = 0.5;
+  const gtao = new GTAOPass(scene, camera, Math.round(size.x * pr * AO_SCALE), Math.round(size.y * pr * AO_SCALE));
+  const gtaoSetSize = gtao.setSize.bind(gtao);
+  gtao.setSize = (w, h) => gtaoSetSize(Math.max(1, Math.round(w * AO_SCALE)), Math.max(1, Math.round(h * AO_SCALE)));
   gtao.output = GTAOPass.OUTPUT.Default;
   gtao.blendIntensity = 1;
   gtao.updateGtaoMaterial({
@@ -34,10 +39,22 @@ export function createPostProcessing(renderer, scene, camera) {
     thickness: 1.5,
     distanceFallOff: 1,
     scale: 1.25,
-    samples: 16,
+    samples: 12,
     screenSpaceRadius: false,
   });
-  gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, radiusExponent: 1, rings: 2, samples: 16 });
+  gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, radiusExponent: 1, rings: 2, samples: 12 });
+  // GTAO renders the scene again for normals/depth. Without this, that render would also
+  // redraw every shadow map (all cascades, all casters) a second time each frame.
+  const gtaoRender = gtao.render.bind(gtao);
+  gtao.render = (...args) => {
+    const auto = renderer.shadowMap.autoUpdate;
+    renderer.shadowMap.autoUpdate = false;
+    try {
+      gtaoRender(...args);
+    } finally {
+      renderer.shadowMap.autoUpdate = auto;
+    }
+  };
   composer.addPass(gtao);
 
   const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.16, 0.45, 1.4);

@@ -87,6 +87,7 @@ export function createLighting({ renderer, scene, camera, shadowFar = 700 }) {
     light.color.copy(LOOK.day.sun);
     light.shadow.normalBias = 0.35;
   }
+
   csm.updateFrustums();
 
   scene.fog = new THREE.Fog(LOOK.day.fog.clone(), LOOK.day.fogNear, LOOK.day.fogFar);
@@ -112,6 +113,29 @@ export function createLighting({ renderer, scene, camera, shadowFar = 700 }) {
       material.onBeforeCompile = function (shader, r) {
         own.call(this, shader, r);
         csmHook.call(this, shader, r);
+      };
+    },
+
+    /**
+     * Small props (an InstancedMesh) cast shadows only in the `cascades` nearest cascades,
+     * where their shadows are big enough to see. In the others the instance count is set to
+     * 0 for that one shadow draw. (Layers can't do this: three.js tests shadow casters
+     * against the main camera's layers, not the cascade's.)
+     */
+    nearShadowsOnly(mesh, cascades = 2) {
+      const near = new Set(csm.lights.slice(0, cascades).map((l) => l.shadow.camera));
+      let saved = -1;
+      mesh.onBeforeShadow = (r, obj, cam, shadowCamera) => {
+        if (!near.has(shadowCamera)) {
+          saved = obj.count;
+          obj.count = 0;
+        }
+      };
+      mesh.onAfterShadow = (r, obj) => {
+        if (saved >= 0) {
+          obj.count = saved;
+          saved = -1;
+        }
       };
     },
 
