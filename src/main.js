@@ -192,7 +192,7 @@ async function loadWorld() {
 
   // Street life: pedestrians on the sidewalks, cars / vans and the light rail on the roads.
   pedestrians = new PedestrianSystem({ collision: world.collision });
-  traffic = new TrafficSystem({ collision: world.collision, uniforms: world.uniforms });
+  traffic = new TrafficSystem({ collision: world.collision, uniforms: world.uniforms, environment: scene.environment });
   traffic.setPoolMaterial(world.materials.pool);
   lighting.setupMaterial(pedestrians.mesh.material);
   lighting.nearShadowsOnly(pedestrians.mesh);

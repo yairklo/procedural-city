@@ -33,13 +33,18 @@ export function createPostProcessing(renderer, scene, camera) {
   gtao.setSize = (w, h) => gtaoSetSize(Math.max(1, Math.round(w * AO_SCALE)), Math.max(1, Math.round(h * AO_SCALE)));
   gtao.output = GTAOPass.OUTPUT.Default;
   gtao.blendIntensity = 1;
+  // Tuned for small objects as well as buildings: a 2.2 m radius spread the occlusion of a
+  // 20 cm limb or a bench over meters, so it faded to nothing and people and props looked
+  // flat. A tighter radius with a stronger scale and more samples gives crisp contact
+  // shading under feet, benches, tree trunks and curbs; alleys and wall/street junctions
+  // still darken. Thinner `thickness` stops thin objects occluding what lies behind them.
   gtao.updateGtaoMaterial({
-    radius: 2.2, // meters: wide enough to darken wall/street junctions and narrow alleys
-    distanceExponent: 1.5,
-    thickness: 1.5,
-    distanceFallOff: 1,
-    scale: 1.25,
-    samples: 12,
+    radius: 1.6, // meters
+    distanceExponent: 1.3,
+    thickness: 1.0,
+    distanceFallOff: 0.85,
+    scale: 1.45,
+    samples: 16,
     screenSpaceRadius: false,
   });
   gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, radiusExponent: 1, rings: 2, samples: 12 });

@@ -46,7 +46,9 @@ export class TrafficSystem {
    * @param {{uNight:{value:number}}} p.uniforms
    * @param {Partial<typeof DEFAULT_TRAFFIC_OPTIONS>} [p.options]
    */
-  constructor({ collision, uniforms, options = {} }) {
+  /** @param {{ collision, uniforms, environment?: THREE.Texture | null, options? }} p  environment: reflection map for the steel rails */
+  constructor({ collision, uniforms, environment = null, options = {} }) {
+    this.environment = environment;
     this.o = { ...DEFAULT_TRAFFIC_OPTIONS, ...options };
     this.collision = collision;
     this.uniforms = uniforms;
@@ -203,7 +205,7 @@ export class TrafficSystem {
       this.rail = null;
     }
     if (path && path.length > 150) {
-      this.rail = new LightRail(path, { terrain: (x, z) => this.collision.terrainHeight(x, z), uniforms: this.uniforms });
+      this.rail = new LightRail(path, { terrain: (x, z) => this.collision.terrainHeight(x, z), uniforms: this.uniforms, environment: this.environment });
       if (old) this.rail.continueFrom(old);
       this.group.add(this.rail.group);
     }
@@ -353,7 +355,7 @@ export function jaffaPath(network) {
 }
 
 class LightRail {
-  constructor(path, { terrain, uniforms, modules = 5 }) {
+  constructor(path, { terrain, uniforms, environment = null, modules = 5 }) {
     this.path = path;
     this.terrain = terrain;
     this.modules = modules;
@@ -377,7 +379,12 @@ class LightRail {
     this.mesh.frustumCulled = false;
     this.mesh.castShadow = true;
     this.mesh.receiveShadow = true;
-    this.rails = new THREE.Mesh(railGeometry(path, terrain), new THREE.MeshStandardMaterial({ color: 0x8a8d90, metalness: 0.8, roughness: 0.35, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -24 }));
+    this.rails = new THREE.Mesh(railGeometry(path, terrain), new THREE.MeshStandardMaterial({
+      color: 0xa4a8ad, metalness: 0.85, roughness: 0.25,
+      // Polished steel shows what it reflects: its own env map at full strength (the scene-wide
+      // environment is kept dim for the stone), so the rail heads catch the sky and sun glints.
+      envMap: environment, envMapIntensity: 1,
+    }));
     this.rails.name = 'LightRail(rails)';
     this.rails.receiveShadow = true;
     this.group.add(this.mesh, this.rails);
@@ -573,9 +580,31 @@ function tramModuleGeometry() {
   ], false);
 }
 
-/** Two steel rails (1435 mm gauge) along the path, draped on the terrain. */
-function railGeometry(path, terrain) {
-  const pos = [];
+// Rail profile: the head stands RAIL_HEIGHT above the asphalt (+0.06 m over the terrain) and
+// its base sinks just below it, so there is no gap at the road surface.
+const RAIL_GAUGE_HALF = 0.7175; // 1435 mm standard gauge
+const RAIL_HEAD = 0.072; // head width, m
+const RAIL_BASE_Y = 0.055, RAIL_HEIGHT = 0.045;
+
+/**
+ * Two steel rails (1435 mm gauge) along the path: solid bars with a top and two side faces,
+ * draped on the terrain in steps of at most 4 m. Faces are wound outward with flat normals,
+ * so the polished top catches sun glints.
+ */
+export function railGeometry(path, terrain) {
+  const pos = [], nrm = [];
+  const tri = (a, b, c, n) => {
+    // Wind so that (b - a) x (c - a) points along n.
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    if ((uy * vz - uz * vy) * n[0] + (uz * vx - ux * vz) * n[1] + (ux * vy - uy * vx) * n[2] < 0) [b, c] = [c, b];
+    pos.push(...a, ...b, ...c);
+    for (let k = 0; k < 3; k++) nrm.push(...n);
+  };
+  const quad = (a, b, c, d, n) => {
+    tri(a, b, c, n);
+    tri(a, c, d, n);
+  };
   const p = path.points;
   for (let i = 0; i + 3 < p.length; i += 2) {
     const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3];
@@ -583,21 +612,24 @@ function railGeometry(path, terrain) {
     if (len < 1e-3) continue;
     const steps = Math.max(1, Math.ceil(len / 4));
     const nx = -(bz - az) / len, nz = (bx - ax) / len;
-    for (const off of [-0.72, 0.72]) {
+    for (const off of [-RAIL_GAUGE_HALF, RAIL_GAUGE_HALF]) {
       for (let k = 0; k < steps; k++) {
         const t0 = k / steps, t1 = (k + 1) / steps;
-        const q = (t, side) => {
-          const x = ax + (bx - ax) * t + nx * (off + side * 0.04), z = az + (bz - az) * t + nz * (off + side * 0.04);
-          return [x, terrain(x, z) + 0.075, z];
+        // Corner of the bar: side -1 / +1 across it, top or bottom.
+        const q = (t, side, top) => {
+          const x = ax + (bx - ax) * t + nx * (off + side * RAIL_HEAD / 2), z = az + (bz - az) * t + nz * (off + side * RAIL_HEAD / 2);
+          return [x, terrain(x, z) + RAIL_BASE_Y + (top ? RAIL_HEIGHT : 0), z];
         };
-        const a0 = q(t0, -1), a1 = q(t0, 1), b0 = q(t1, -1), b1 = q(t1, 1);
-        pos.push(...a0, ...b0, ...a1, ...a1, ...b0, ...b1, ...a0, ...a1, ...b0, ...a1, ...b1, ...b0);
+        quad(q(t0, -1, true), q(t1, -1, true), q(t1, 1, true), q(t0, 1, true), [0, 1, 0]);
+        quad(q(t0, -1, false), q(t1, -1, false), q(t1, -1, true), q(t0, -1, true), [-nx, 0, -nz]);
+        quad(q(t0, 1, false), q(t1, 1, false), q(t1, 1, true), q(t0, 1, true), [nx, 0, nz]);
       }
     }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.computeVertexNormals();
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.computeBoundingSphere();
   return g;
 }
 

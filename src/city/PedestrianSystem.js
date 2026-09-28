@@ -41,8 +41,13 @@ const NO_WALK = new Set(['motorway', 'trunk', 'motorway_link', 'trunk_link']);
 const PAVED = new Set(['pedestrian', 'footway', 'path', 'steps', 'living_street', 'corridor', 'sidewalk', 'cycleway']);
 export const isWalkable = (edge) => !NO_WALK.has(edge.road.highway);
 
-// Clothing: Haredi black and white, soldiers' olive, and everyday colours.
-const CLOTHES = [0x141414, 0x141414, 0x1b1b22, 0xe9e6de, 0x5a6135, 0x2f4a6e, 0x7a2e2e, 0x8a7a5a, 0x3c5a48, 0xb8a27a, 0x6b6b70, 0x9e4f2a, 0x2a2a2a, 0xd9d2c3];
+// Jerusalem street clothing (sRGB): tops and bottoms are picked separately. Blues, beiges,
+// whites and dark tones, with a few accents; soldiers' olive; Haredi black coats over black.
+const TOPS = [0x16161a, 0x1f2a44, 0x2f4a6e, 0x5b7fa6, 0xe9e6de, 0xf2efe8, 0xd8cfbf, 0xb8a27a, 0x8a7a5a, 0x5a6135, 0x6b6b70, 0x3c5a48, 0x7a2e2e];
+const BOTTOMS = [0x141417, 0x1f2638, 0x2c3b58, 0x4a5a78, 0x3a3a3e, 0x5b5750, 0xb9ad94, 0x8c8068, 0x5a6135];
+const HAREDI = { top: 0x141414, bottom: 0x141414 };
+// Street surfaces sit this far above the terrain (see _groundY).
+const SURFACE_LIFT = 0.05;
 
 const damp = (a, b, lambda, dt) => a + (b - a) * (1 - Math.exp(-lambda * dt));
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
@@ -57,6 +62,8 @@ export class PedestrianSystem {
     this.o = { ...DEFAULT_PEDESTRIAN_OPTIONS, ...options };
     this.collision = collision;
     this.rng = createRng(this.o.seed);
+    // Appearance has its own stream, so looks never change how anyone moves.
+    this.lookRng = createRng(`${this.o.seed}/look`);
     this.network = null;
     this.walkEdges = [];
     this.agents = [];
@@ -149,6 +156,10 @@ export class PedestrianSystem {
     const theme = rng.next();
     const group = { kind, members: [], history: [], compress: 0, lastYaw: null, turnRate: 0 };
     const make = (role, index) => {
+      // Groups often dress alike (a Haredi pair in black, a family in similar tones).
+      const dressAlike = theme < 0.3 && kind !== 'solo';
+      const look = this.lookRng;
+      const clothing = rng.next(); // one draw on the behaviour stream, as before
       const a = {
         role, index, group,
         edge, forward, s, offset, offsetScale: 1,
@@ -158,8 +169,10 @@ export class PedestrianSystem {
         stride: rng.range(0.9, 1.1),
         scale: (role === 'trail' && kind === 'cluster' && index === 1 ? 0.7 : 1) * rng.range(0.88, 1.12),
         girth: rng.range(0.9, 1.12),
-        // Groups often dress alike (a Haredi pair in black, a family in similar tones).
-        color: theme < 0.3 && kind !== 'solo' ? CLOTHES[rng.int(0, 2)] : rng.pick(CLOTHES),
+        color: dressAlike ? HAREDI.top : TOPS[Math.floor(clothing * TOPS.length)],
+        lower: dressAlike ? HAREDI.bottom : look.pick(BOTTOMS),
+        skin: look.next(), // 0 = light .. 1 = dark
+        hair: look.next(),
         moving: speed,
       };
       this.agents.push(a);
@@ -191,6 +204,15 @@ export class PedestrianSystem {
     return { x: p.x - p.uz * off, z: p.z + p.ux * off, ux: p.ux, uz: p.uz };
   }
 
+  /**
+   * Feet height: the walking surface, not the bare terrain. Street surfaces are draped
+   * SURFACE_LIFT above the terrain (paving +0.04 m, asphalt +0.06 m in buildChunkParts), so
+   * standing on the terrain sank feet into the pavement.
+   */
+  _groundY(x, z) {
+    return this.collision.terrainHeight(x, z) + SURFACE_LIFT;
+  }
+
   _blocked(x, z, r = 0.3) {
     const y = this.collision.terrainHeight(x, z);
     return this.collision.queryAABB(x - r, y + 0.3, z - r, x + r, y + 1.6, z + r).some((b) => b.kind !== 'roof-prop');
@@ -210,7 +232,7 @@ export class PedestrianSystem {
       a.z = damp(a.z, t.z, 6, dt);
     }
     a.offsetScale = Math.min(1, a.offsetScale + dt * 0.1);
-    a.y = this.collision.terrainHeight(a.x, a.z);
+    a.y = this._groundY(a.x, a.z);
     const yaw = Math.atan2(-t.ux, -t.uz);
     a.yaw = dt === 0 ? yaw : a.yaw + wrap(yaw - a.yaw) * Math.min(1, dt * 6);
   }
@@ -273,7 +295,7 @@ export class PedestrianSystem {
         a.x = tx;
         a.z = tz;
       }
-      a.y = this.collision.terrainHeight(a.x, a.z);
+      a.y = this._groundY(a.x, a.z);
       a.yaw = a.yaw + wrap(tyaw - a.yaw) * Math.min(1, dt * 8);
       a.moving = L.moving;
     }
@@ -288,7 +310,7 @@ export class PedestrianSystem {
       a.z += (dz / d) * step;
       a.yaw = a.yaw + wrap(Math.atan2(-dx, -dz) - a.yaw) * Math.min(1, dt * 8);
     }
-    a.y = this.collision.terrainHeight(a.x, a.z);
+    a.y = this._groundY(a.x, a.z);
     a.moving = a.speed;
     return d - step;
   }
@@ -322,7 +344,7 @@ export class PedestrianSystem {
       const alt = [[a.fleeZ, -a.fleeX], [-a.fleeZ, a.fleeX]].find(([dx, dz]) => !this._blocked(a.x + dx * speed * dt, a.z + dz * speed * dt));
       if (alt) { a.fleeX = alt[0]; a.fleeZ = alt[1]; }
     }
-    a.y = this.collision.terrainHeight(a.x, a.z);
+    a.y = this._groundY(a.x, a.z);
     a.yaw = a.yaw + wrap(Math.atan2(-a.fleeX, -a.fleeZ) - a.yaw) * Math.min(1, dt * 10);
     a.moving = speed;
     if (a.fleeT <= 0) a.state = 'return';
@@ -334,7 +356,7 @@ export class PedestrianSystem {
 
   /** Writes the instances within `radius` of the camera. Call once per frame. */
   render(camera, time) {
-    const mesh = this.mesh, walk = mesh.geometry.getAttribute('aWalk');
+    const mesh = this.mesh, walk = mesh.geometry.getAttribute('aWalk'), look = mesh.geometry.getAttribute('aLook');
     const r2 = this.o.radius * this.o.radius;
     const p = camera.position;
     let n = 0;
@@ -345,7 +367,9 @@ export class PedestrianSystem {
       this._s.set(a.scale * a.girth, a.scale, a.scale * a.girth);
       this._m.compose(this._v.set(a.x, a.y, a.z), this._q, this._s);
       mesh.setMatrixAt(n, this._m);
-      mesh.setColorAt(n, this._c.setHex(a.color));
+      mesh.setColorAt(n, this._c.setHex(a.color)); // top (instance colour)
+      this._c.setHex(a.lower); // bottoms, linear like the instance colour
+      look.setXYZW(n, this._c.r, this._c.g, this._c.b, a.skin + Math.floor(a.hair * 4) * 2); // skin 0..1 + hair shade 0/2/4/6
       // Stride: phase, cadence (rad/s) and swing amplitude from the current speed.
       walk.setXYZ(n, a.phase, 5.2 * a.stride * (0.55 + 0.45 * a.moving / 1.3), Math.min(0.75, 0.32 * a.moving));
       n++;
@@ -355,75 +379,131 @@ export class PedestrianSystem {
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     walk.needsUpdate = true;
+    look.needsUpdate = true;
     mesh.material.userData.uniforms.uTime.value = time;
   }
 
   dispose() {
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
+    this.mesh.customDepthMaterial?.dispose();
     this.mesh.dispose();
   }
 }
 
 /**
- * Low-poly walker (1.75 m): torso, head, two legs, two arms. aPart tags the limbs for the
- * vertex-shader swing (1/2 legs pivot at the hips, 3/4 arms at the shoulders); aSkin marks
- * head and hands, which keep a skin tone instead of the clothing colour.
+ * Faceted low-poly mannequin (1.75 m), flat-shaded: head with hair, neck, torso widening to
+ * the shoulders, pelvis, two-part legs with shoes, two-part arms with hands.
+ *
+ * aPart tags the limbs for the vertex-shader swing (1/2 legs pivot at the hips, 3/4 arms at
+ * the shoulders). aZone picks the colour: 0 top (instance colour), 1 bottoms, 2 skin,
+ * 3 shoes, 4 hair. Per instance, aLook = (bottoms rgb, skin tone 0..1 + 2 * hair shade 0..3).
+ * A matching depth material applies the same swing, so shadows move with the limbs.
  */
+const ZONE = { top: 0, bottom: 1, skin: 2, shoe: 3, hair: 4 };
+
 export function createPedestrianMesh(max) {
-  const part = (geo, partId, skin = 0) => {
+  const part = (geo, partId, zone) => {
     const g = geo.index ? geo.toNonIndexed() : geo;
+    if (g !== geo) geo.dispose();
     g.deleteAttribute('uv');
+    g.computeVertexNormals(); // non-indexed: one normal per face, i.e. faceted
     const n = g.getAttribute('position').count;
     g.setAttribute('aPart', new THREE.BufferAttribute(new Float32Array(n).fill(partId), 1));
-    g.setAttribute('aSkin', new THREE.BufferAttribute(new Float32Array(n).fill(skin), 1));
+    g.setAttribute('aZone', new THREE.BufferAttribute(new Float32Array(n).fill(zone), 1));
     return g;
   };
+  // Tapered prism from y0 to y1, flattened front-to-back by `depth`.
+  const prism = (rBottom, rTop, y0, y1, x, depth = 1, sides = 6) =>
+    new THREE.CylinderGeometry(rTop, rBottom, y1 - y0, sides).scale(1, 1, depth).translate(x, (y0 + y1) / 2, 0);
+
+  const limbs = [];
+  for (const side of [-1, 1]) {
+    const leg = side < 0 ? 1 : 2, arm = side < 0 ? 3 : 4;
+    limbs.push(
+      part(prism(0.058, 0.075, 0.07, 0.48, side * 0.095), leg, ZONE.bottom), // shin
+      part(prism(0.075, 0.098, 0.46, 0.88, side * 0.1), leg, ZONE.bottom), // thigh
+      part(new THREE.BoxGeometry(0.1, 0.075, 0.25).translate(side * 0.095, 0.037, 0.035), leg, ZONE.shoe),
+      part(prism(0.047, 0.056, 1.14, 1.46, side * 0.235, 1, 5), arm, ZONE.top), // upper arm
+      part(prism(0.037, 0.046, 0.88, 1.15, side * 0.24, 1, 5), arm, ZONE.top), // forearm (long sleeves)
+      part(new THREE.IcosahedronGeometry(0.045, 0).scale(0.8, 1.1, 0.6).translate(side * 0.24, 0.84, 0), arm, ZONE.skin), // hand
+    );
+  }
   const geo = mergeGeometries([
-    part(new THREE.BoxGeometry(0.38, 0.62, 0.22).translate(0, 1.2, 0), 0), // torso
-    part(new THREE.BoxGeometry(0.34, 0.14, 0.24).translate(0, 0.86, 0), 0), // hips
-    part(new THREE.SphereGeometry(0.115, 8, 6).translate(0, 1.64, 0), 0, 1), // head
-    part(new THREE.CylinderGeometry(0.14, 0.14, 0.05, 8).translate(0, 1.76, 0), 0), // hat / hair
-    part(new THREE.BoxGeometry(0.13, 0.85, 0.14).translate(-0.09, 0.43, 0), 1), // left leg
-    part(new THREE.BoxGeometry(0.13, 0.85, 0.14).translate(0.09, 0.43, 0), 2), // right leg
-    part(new THREE.BoxGeometry(0.09, 0.6, 0.1).translate(-0.24, 1.18, 0), 3), // left arm
-    part(new THREE.BoxGeometry(0.09, 0.6, 0.1).translate(0.24, 1.18, 0), 4), // right arm
+    part(prism(0.15, 0.165, 0.84, 1.0, 0, 0.62), 0, ZONE.bottom), // pelvis
+    part(prism(0.155, 0.2, 0.98, 1.4, 0, 0.58), 0, ZONE.top), // torso, widening to the chest
+    part(prism(0.2, 0.12, 1.4, 1.5, 0, 0.58), 0, ZONE.top), // shoulders
+    part(prism(0.045, 0.045, 1.49, 1.57, 0, 1, 5), 0, ZONE.skin), // neck
+    part(new THREE.IcosahedronGeometry(0.108, 1).scale(0.92, 1.12, 1).translate(0, 1.67, 0.005), 0, ZONE.skin), // head
+    part(new THREE.SphereGeometry(0.116, 7, 3, 0, Math.PI * 2, 0, Math.PI * 0.45).translate(0, 1.685, -0.008), 0, ZONE.hair),
+    ...limbs,
   ], false);
   geo.setAttribute('aWalk', new THREE.InstancedBufferAttribute(new Float32Array(max * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aLook', new THREE.InstancedBufferAttribute(new Float32Array(max * 4), 4).setUsage(THREE.DynamicDrawUsage));
 
   const uniforms = { uTime: { value: 0 } };
-  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 });
-  mat.userData.uniforms = uniforms;
-  mat.customProgramCacheKey = () => 'pedestrian-v1';
-  mat.onBeforeCompile = (shader) => {
-    shader.uniforms.uTime = uniforms.uTime;
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>
+  // Shared by the colour and the shadow-depth shaders.
+  const SWING_DECL = /* glsl */ `
 attribute float aPart;
-attribute float aSkin;
 attribute vec3 aWalk;
 uniform float uTime;
-varying float vSkin;
 vec3 pedSwing(vec3 p, float pivotY, float angle) {
   float c = cos(angle), s = sin(angle);
   p.y -= pivotY;
   p = vec3(p.x, p.y * c - p.z * s, p.y * s + p.z * c);
   p.y += pivotY;
   return p;
-}`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>
-  vSkin = aSkin;
+}`;
+  const SWING = /* glsl */ `
   {
     float swing = sin(uTime * aWalk.y + aWalk.x) * aWalk.z;
     if (aPart > 0.5 && aPart < 2.5) transformed = pedSwing(transformed, 0.86, aPart < 1.5 ? swing : -swing);
     else if (aPart > 2.5) transformed = pedSwing(transformed, 1.46, (aPart < 3.5 ? -swing : swing) * 0.8);
     transformed.y += abs(sin(uTime * aWalk.y + aWalk.x)) * aWalk.z * 0.05;
-  }`);
+  }`;
+
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, metalness: 0, flatShading: true });
+  mat.userData.uniforms = uniforms;
+  mat.customProgramCacheKey = () => 'pedestrian-v2';
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uniforms.uTime;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+${SWING_DECL}
+attribute float aZone;
+attribute vec4 aLook;
+varying float vZone;
+varying vec4 vLook;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+  vZone = aZone;
+  vLook = aLook;
+${SWING}`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying float vSkin;')
-      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.43, 0.32), vSkin);');
+      .replace('#include <common>', '#include <common>\nvarying float vZone;\nvarying vec4 vLook;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+  {
+    float skinTone = mod(vLook.w, 2.0);
+    float hairShade = floor(vLook.w * 0.5) / 3.0;
+    vec3 skin = mix(vec3(0.60, 0.38, 0.27), vec3(0.16, 0.09, 0.055), skinTone);
+    vec3 hair = mix(vec3(0.02, 0.017, 0.015), vec3(0.16, 0.09, 0.04), hairShade);
+    if (vZone > 3.5) diffuseColor.rgb = hair;
+    else if (vZone > 2.5) diffuseColor.rgb = vec3(0.025, 0.022, 0.02); // shoes
+    else if (vZone > 1.5) diffuseColor.rgb = skin;
+    else if (vZone > 0.5) diffuseColor.rgb = vLook.rgb; // bottoms
+  }`);
   };
+
+  const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+  depth.customProgramCacheKey = () => 'pedestrian-depth-v1';
+  depth.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uniforms.uTime;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>\n${SWING_DECL}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${SWING}`);
+  };
+
   const mesh = new THREE.InstancedMesh(geo, mat, max);
+  mesh.customDepthMaterial = depth;
   mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   mesh.setColorAt(0, new THREE.Color(0xffffff)); // allocates instanceColor
   mesh.count = 0;

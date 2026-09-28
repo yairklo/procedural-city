@@ -1017,6 +1017,7 @@ function ribbonGeometry(points, hw, y) {
 }
 
 const CURB_WIDTH = 0.3;
+const CURB_HEIGHT = 0.14; // above the paving (+0.04): the top stands 12 cm over the asphalt (+0.06)
 
 /**
  * Regular grid over `rect` following the terrain (+ yOffset), with smooth terrain normals.
@@ -1134,6 +1135,179 @@ function drapeGeometry(geometry, terrain, lift, maxEdge) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  g.computeBoundingSphere();
+  return g;
+}
+
+/**
+ * Tests whether a point lies on the carriageway of any asphalt road line in `roads`
+ * (distance to its centerline below its half-width). Segments are bucketed in a 16 m grid.
+ */
+function carriagewayTest(roads) {
+  const CELL = 16;
+  const grid = new Map();
+  for (const r of roads) {
+    if (r.surface !== 'asphalt' || !r.points) continue;
+    const hw = r.width / 2, p = r.points;
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      const seg = [p[i], p[i + 1], p[i + 2], p[i + 3], hw];
+      const x0 = Math.floor((Math.min(p[i], p[i + 2]) - hw) / CELL), x1 = Math.floor((Math.max(p[i], p[i + 2]) + hw) / CELL);
+      const z0 = Math.floor((Math.min(p[i + 1], p[i + 3]) - hw) / CELL), z1 = Math.floor((Math.max(p[i + 1], p[i + 3]) + hw) / CELL);
+      for (let gx = x0; gx <= x1; gx++) {
+        for (let gz = z0; gz <= z1; gz++) {
+          const k = `${gx},${gz}`;
+          let list = grid.get(k);
+          if (!list) grid.set(k, (list = []));
+          list.push(seg);
+        }
+      }
+    }
+  }
+  return (x, z) => {
+    const list = grid.get(`${Math.floor(x / CELL)},${Math.floor(z / CELL)}`);
+    if (!list) return false;
+    for (const [ax, az, bx, bz, hw] of list) {
+      const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz;
+      const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)) : 0;
+      if ((x - ax - dx * t) ** 2 + (z - az - dz * t) ** 2 < (hw - 0.05) ** 2) return true;
+    }
+    return false;
+  };
+}
+
+/**
+ * Raised curb stones (אבני שפה): a solid band of width `w` and height `h` along both edges
+ * of a carriageway of half-width `hw`, with a vertical face toward the road, one toward the
+ * sidewalk and a top. Pieces that would stand on any carriageway (`inRoad`: crossing streets
+ * at junctions, the inside of bends) are left out, so curbs stop at intersections instead of
+ * walling them off; cut runs get end caps. Round pieces around each vertex close the outside
+ * of bends. y is relative to the base (drapeSolid adds terrain height + lift).
+ */
+function curbSolidGeometry(points, hw, w, h, inRoad) {
+  const sink = new TriangleSink();
+  const r0 = hw, r1 = hw + w, rm = hw + w / 2, STEP = 1, PIECE = 5.8; // PIECE: just under drapeSolid's 6 m edge limit (tops never split)
+  const box = (i0, o0, o1, i1, inward, along, capStart = true, capEnd = true) => {
+    // i* on the road side, o* on the sidewalk side; 0 = start, 1 = end of the piece.
+    const top = (p) => [p[0], h, p[2]];
+    sink.tri(top(i0), top(o0), top(o1), UP);
+    sink.tri(top(i0), top(o1), top(i1), UP);
+    const wall = (a, b, n) => {
+      sink.tri(a, b, top(b), n);
+      sink.tri(a, top(b), top(a), n);
+    };
+    wall(i0, i1, inward);
+    wall(o0, o1, [-inward[0], 0, -inward[2]]);
+    if (along) {
+      if (capStart) wall(i0, o0, [-along[0], 0, -along[2]]);
+      if (capEnd) wall(i1, o1, along);
+    }
+  };
+  const n = points.length / 2;
+  for (let i = 0; i < n - 1; i++) {
+    const ax = points[i * 2], az = points[i * 2 + 1], bx = points[i * 2 + 2], bz = points[i * 2 + 3];
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 1e-3) continue;
+    const dx = (bx - ax) / len, dz = (bz - az) / len, px = -dz, pz = dx;
+    const steps = Math.max(1, Math.ceil(len / STEP));
+    for (const side of [1, -1]) {
+      const at = (t, r) => [ax + dx * len * t + px * r * side, 0, az + dz * len * t + pz * r * side];
+      const inward = [-px * side, 0, -pz * side];
+      // Kept = no part of the stone's width stands on a carriageway at this point.
+      const kept = (t) => {
+        const a = at(t, r0 + 0.02), b = at(t, r1);
+        return !inRoad(a[0], a[2]) && !inRoad(b[0], b[2]);
+      };
+      // Exact cut between a kept and a dropped position (bisection to ~1 cm).
+      const cut = (tKeep, tDrop) => {
+        for (let it = 0; it < 10; it++) {
+          const tm = (tKeep + tDrop) / 2;
+          if (kept(tm)) tKeep = tm;
+          else tDrop = tm;
+        }
+        return tKeep;
+      };
+      const mid = (k) => (k + 0.5) / steps;
+      let start = null;
+      for (let k = 0; k <= steps; k++) {
+        const keep = k < steps && kept(mid(k));
+        if (keep && start === null) start = k;
+        if (!keep && start !== null) {
+          const t0 = start === 0 ? (kept(0) ? 0 : cut(mid(0), 0)) : cut(mid(start), mid(start - 1));
+          const t1 = k === steps ? (kept(1) ? 1 : cut(mid(k - 1), 1)) : cut(mid(k - 1), mid(k));
+          // Pieces of at most PIECE m, so draping never has to split the walls (see drapeSolid).
+          const pieces = Math.max(1, Math.ceil(((t1 - t0) * len) / PIECE));
+          for (let q = 0; q < pieces; q++) {
+            const s0 = t0 + ((t1 - t0) * q) / pieces, s1 = t0 + ((t1 - t0) * (q + 1)) / pieces;
+            if (s1 > s0) box(at(s0, r0), at(s0, r1), at(s1, r1), at(s1, r0), inward, [dx, 0, dz], q === 0, q === pieces - 1);
+          }
+          start = null;
+        }
+      }
+    }
+  }
+  // At a bend the straight runs leave a wedge open on the outside: fill it with round pieces
+  // between the two segments' perpendiculars (about one per 20°). Only real bends get them;
+  // the inside wedge lies on the carriageway and is dropped by the inRoad test.
+  const MAX_PIECE = (20 * Math.PI) / 180;
+  for (let i = 1; i < n - 1; i++) {
+    const x = points[i * 2], z = points[i * 2 + 1];
+    const d1x = x - points[i * 2 - 2], d1z = z - points[i * 2 - 1], d2x = points[i * 2 + 2] - x, d2z = points[i * 2 + 3] - z;
+    const turn = Math.atan2(Math.abs(d1x * d2z - d1z * d2x), d1x * d2x + d1z * d2z);
+    if (!(turn > 0.15)) continue;
+    const angles = [];
+    for (const side of [1, -1]) {
+      const a0 = Math.atan2(d1x * side, -d1z * side), a1 = Math.atan2(d2x * side, -d2z * side); // angle of (-dz, dx) * side
+      const delta = Math.atan2(Math.sin(a1 - a0), Math.cos(a1 - a0));
+      const pieces = Math.ceil(Math.abs(delta) / MAX_PIECE);
+      for (let k = 0; k < pieces; k++) angles.push([a0 + (delta * k) / pieces, a0 + (delta * (k + 1)) / pieces]);
+    }
+    for (const [t0, t1] of angles) {
+      const tm = (t0 + t1) / 2;
+      const c0 = Math.cos(t0), s0 = Math.sin(t0), c1 = Math.cos(t1), s1 = Math.sin(t1);
+      const cm = Math.cos(tm), sm = Math.sin(tm);
+      const corners = [[x + c0 * r0, 0, z + s0 * r0], [x + c0 * r1, 0, z + s0 * r1], [x + c1 * r1, 0, z + s1 * r1], [x + c1 * r0, 0, z + s1 * r0]];
+      // On a wide road a 36° piece spans meters: test its corners too, not just the middle.
+      if (inRoad(x + cm * rm, z + sm * rm) || corners.some((c) => inRoad(c[0], c[2]))) continue;
+      box(...corners, [-cm, 0, -sm], null);
+    }
+  }
+  return sink.geometry();
+}
+
+/**
+ * Like drapeGeometry, for solids: keeps each vertex's own y as an offset above terrain +
+ * `lift` (so walls stay vertical) and keeps face normals of walls; faces pointing up get
+ * the terrain normal.
+ */
+function drapeSolid(geometry, terrain, lift, maxEdge) {
+  const P = geometry.getAttribute('position').array, N = geometry.getAttribute('normal').array;
+  const pos = [], nrm = [];
+  const max2 = maxEdge * maxEdge;
+  const vertex = (v, n) => {
+    pos.push(v[0], terrain.heightAt(v[0], v[2]) + lift + v[1], v[2]);
+    const t = n[1] > 0.7 && !terrain.flat ? terrainNormal(terrain, v[0], v[2]) : n;
+    nrm.push(t[0], t[1], t[2]);
+  };
+  const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2];
+  const split = (a, b, c, n, depth) => {
+    const ab = (a[0] - b[0]) ** 2 + (a[2] - b[2]) ** 2, bc = (b[0] - c[0]) ** 2 + (b[2] - c[2]) ** 2, ca = (c[0] - a[0]) ** 2 + (c[2] - a[2]) ** 2;
+    const m = Math.max(ab, bc, ca);
+    // Walls have no area on the ground: bisecting them only makes slivers (the generator
+    // already keeps them short), so they follow the terrain through their own vertices.
+    if (terrain.flat || m <= max2 || depth > 12 || Math.abs(n[1]) < 0.7) {
+      vertex(a, n); vertex(b, n); vertex(c, n);
+      return;
+    }
+    if (m === ab) { const d = mid(a, b); split(a, d, c, n, depth + 1); split(d, b, c, n, depth + 1); }
+    else if (m === bc) { const d = mid(b, c); split(a, b, d, n, depth + 1); split(a, d, c, n, depth + 1); }
+    else { const d = mid(c, a); split(a, b, d, n, depth + 1); split(d, b, c, n, depth + 1); }
+  };
+  for (let i = 0; i < P.length; i += 9) {
+    split([P[i], P[i + 1], P[i + 2]], [P[i + 3], P[i + 4], P[i + 5]], [P[i + 6], P[i + 7], P[i + 8]], [N[i], N[i + 1], N[i + 2]], 0);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
   g.computeBoundingSphere();
   return g;
 }
@@ -1729,14 +1903,21 @@ export function buildChunkParts(chunk, { terrain = FLAT_TERRAIN, level = 'near' 
   if (level !== 'far') {
     layer('Parks', chunk.parks.map((p) => flatPolygonGeometry(p.rings, 0)), 'park', 0.02);
     const geos = { asphalt: [], paving: [], curb: [], marking: [] };
+    const inRoad = level === 'near' ? carriagewayTest(chunk.roads) : null;
     for (const r of chunk.roads) {
       geos[r.surface].push(r.rings ? flatPolygonGeometry(r.rings, 0) : ribbonGeometry(r.points, r.width / 2, 0));
       if (level !== 'near' || r.surface !== 'asphalt' || !r.points) continue;
-      geos.curb.push(curbGeometry(r.points, r.width / 2, CURB_WIDTH));
+      geos.curb.push(curbSolidGeometry(r.points, r.width / 2, CURB_WIDTH, CURB_HEIGHT, inRoad));
       if (r.width >= 8) geos.marking.push(dashedLineGeometry(r.points, 0.07, 3, 4));
     }
     layer('Paving', geos.paving, 'paving', 0.04);
-    if (level === 'near') layer('Curbs', geos.curb, 'curb', 0.05);
+    if (level === 'near' && geos.curb.length) {
+      // Raised curbs: base at paving level, top CURB_HEIGHT above it (12 cm above the asphalt).
+      const merged = mergeGeometries(geos.curb, false);
+      for (const g of geos.curb) g.dispose();
+      mesh('Curbs', 'curb', drapeSolid(merged, terrain, 0.04, 6), false, true);
+      merged.dispose();
+    }
     layer('Roads', geos.asphalt, 'asphalt', 0.06);
     if (level === 'near') layer('Markings', geos.marking, 'marking', 0.08);
   }

@@ -148,18 +148,47 @@ export function generateStreetProps({ roads, parks, osmTrees = [], terrain, rng,
 // Geometry and materials
 // -----------------------------------------------------------------------------------------------
 
-/** Paints a geometry with one color (linear) and a glow flag, non-indexed, without UVs. */
-function paint(geo, hex, glow = 0) {
+/**
+ * Paints a geometry with one color (linear), non-indexed, without UVs. Per-vertex surface:
+ * aSurf = (roughness, metalness, leaf). `facet` recomputes normals per face (low-poly look);
+ * `leaf` marks foliage (matte, lit a little from behind, see createStreetPropMaterial);
+ * `jitter` varies the brightness per face (mottled foliage).
+ */
+function paint(geo, hex, glow = 0, { rough = 0.75, metal = 0.1, leaf = 0, facet = false, jitter = 0 } = {}) {
   const g = geo.index ? geo.toNonIndexed() : geo;
   if (g !== geo) geo.dispose();
   g.deleteAttribute('uv');
+  if (facet) g.computeVertexNormals();
   const c = new THREE.Color(hex);
   const n = g.getAttribute('position').count;
-  const col = new Float32Array(n * 3), gl = new Float32Array(n);
-  for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; gl[i] = glow; }
+  const col = new Float32Array(n * 3), gl = new Float32Array(n), surf = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const f = jitter ? 1 + jitter * (hash1(Math.floor(i / 3) * 7.13 + hex) * 2 - 1) : 1;
+    col[i * 3] = c.r * f; col[i * 3 + 1] = c.g * f; col[i * 3 + 2] = c.b * f;
+    gl[i] = glow;
+    surf[i * 3] = rough; surf[i * 3 + 1] = metal; surf[i * 3 + 2] = leaf;
+  }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   g.setAttribute('aGlow', new THREE.BufferAttribute(gl, 1));
+  g.setAttribute('aSurf', new THREE.BufferAttribute(surf, 3));
   return g;
+}
+
+const hash1 = (x) => {
+  const s = Math.sin(x * 12.9898) * 43758.5453;
+  return s - Math.floor(s);
+};
+
+/** Moves every vertex radially (around the Y axis) by a deterministic amount: irregular silhouettes. */
+function roughen(geo, amount, seed) {
+  const pos = geo.getAttribute('position');
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    // Hash the rounded position so coincident vertices move together (no cracks).
+    const k = 1 + amount * (hash1(Math.round(x * 97) * 3.1 + Math.round(y * 97) * 5.7 + Math.round(z * 97) * 7.3 + seed) * 2 - 1);
+    pos.setXYZ(i, x * k, y, z * k);
+  }
+  return geo;
 }
 
 const merge = (parts) => {
@@ -175,8 +204,8 @@ const merge = (parts) => {
  *            four-sided lantern with a pointed cap (glass glows at night), ~4.2 m
  *   bench    Jerusalem-stone block bench, 1.8 m
  *   bollard  short black iron post with a stone base
- *   cypress  tall narrow Italian cypress, ~9 m
- *   olive    gnarled trunk and a wide silvery crown, ~5 m
+ *   cypress  tall slender Italian cypress, faceted dark-green flame, ~9.3 m
+ *   olive    twisted low-poly trunk forking into limbs under 4 silvery-green clouds, ~4.5 m
  */
 export function createStreetPropGeometries() {
   const IRON = 0x121212, GLASS = 0xffe2a8, STONE = 0xcdbfa8, STONE_DARK = 0xb4a58d;
@@ -198,37 +227,90 @@ export function createStreetPropGeometries() {
     paint(new THREE.CylinderGeometry(0.09, 0.11, 0.75, 8).translate(0, 0.49, 0), IRON),
     paint(new THREE.SphereGeometry(0.1, 8, 4).translate(0, 0.88, 0), IRON),
   ]);
-  const cypress = merge([
-    paint(new THREE.CylinderGeometry(0.12, 0.18, 1.2, 5).translate(0, 0.6, 0), 0x4a3a2c),
-    paint(new THREE.SphereGeometry(1, 8, 10).scale(0.85, 4.2, 0.85).translate(0, 4.8, 0), 0x2c4a26),
-  ]);
-  const crown = new THREE.IcosahedronGeometry(1, 1);
-  const pos = crown.getAttribute('position');
-  for (let i = 0; i < pos.count; i++) {
-    // Lumpy, flattened olive crown.
-    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-    const k = 0.85 + 0.3 * Math.abs(Math.sin(x * 5.1 + z * 3.7));
-    pos.setXYZ(i, x * 2.4 * k, y * 1.3 * k, z * 2.4 * k);
-  }
-  const olive = merge([
-    paint(new THREE.CylinderGeometry(0.2, 0.35, 2.2, 6).translate(0, 1.1, 0).rotateZ(0.12), 0x5b4b3c),
-    paint(crown.translate(0.15, 3.3, 0), 0x7c8a5a),
-  ]);
+  const cypress = cypressGeometry();
+  const olive = oliveGeometry();
   return { lamp, bench, bollard, cypress, olive, pool: new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2) };
+}
+
+// Foliage greens (sRGB): deep cypress greens; silvery olive greens.
+const CYPRESS_GREENS = [0x1d3a1c, 0x234320, 0x1a3319];
+const OLIVE_GREENS = [0x8e9982, 0x7f8a72, 0x9ca58f, 0x737e68]; // grey-green: the silvery underside of olive leaves
+const LEAF = { rough: 0.95, metal: 0, leaf: 1, facet: true, jitter: 0.12 };
+
+/**
+ * Italian cypress: a short trunk and a tall, slender flame of foliage. The body is a stack
+ * of 7-sided frustums (widest a quarter of the way up, tapering to a point), roughened so
+ * the silhouette isn't a perfect cone, plus a second, slightly turned lobe for depth.
+ */
+function cypressGeometry() {
+  const parts = [paint(new THREE.CylinderGeometry(0.1, 0.16, 1.1, 5).translate(0, 0.55, 0), 0x4a3a2c, 0, { rough: 0.95, metal: 0, facet: true })];
+  const profile = [[0.8, 0.32], [1.6, 0.74], [2.7, 0.92], [4.0, 0.88], [5.3, 0.74], [6.5, 0.56], [7.6, 0.36], [8.6, 0.15], [9.3, 0]];
+  for (const [lobe, scale, turn] of [[0, 1, 0], [1, 0.86, Math.PI / 7]]) {
+    for (let i = 0; i < profile.length - 1; i++) {
+      const [y0, r0] = profile[i], [y1, r1] = profile[i + 1];
+      const band = new THREE.CylinderGeometry(r1 * scale, r0 * scale, y1 - y0, 7, 1, i > 0)
+        .rotateY(turn)
+        .translate(lobe * 0.08, (y0 + y1) / 2 + lobe * 0.15, lobe * -0.06);
+      parts.push(paint(roughen(band, 0.14, i * 13 + lobe * 71), CYPRESS_GREENS[(i + lobe) % CYPRESS_GREENS.length], 0, LEAF));
+    }
+  }
+  return merge(parts);
+}
+
+/**
+ * Olive tree: a gnarled trunk leaning one way then the other, forking into three limbs,
+ * each ending in a lumpy low-poly cloud of silvery-green leaves, plus one on top (4 clouds).
+ */
+function oliveGeometry() {
+  const BARK = 0x6a5c4c;
+  const barkOpts = { rough: 0.95, metal: 0, facet: true };
+  const Y = new THREE.Vector3(0, 1, 0);
+  // A limb starting at `from`, tilted by `tilt` (around Z) then turned to `heading` (around Y).
+  const limb = (from, len, r0, r1, tilt, heading) => {
+    const g = new THREE.CylinderGeometry(r1, r0, len, 6).translate(0, len / 2, 0).rotateZ(tilt).rotateY(heading).translate(from.x, from.y, from.z);
+    const tip = new THREE.Vector3(0, len, 0).applyAxisAngle(new THREE.Vector3(0, 0, 1), tilt).applyAxisAngle(Y, heading).add(from);
+    return { g: paint(roughen(g, 0.1, len * 31), BARK, 0, barkOpts), tip };
+  };
+  const trunk = limb(new THREE.Vector3(0, 0, 0), 1.05, 0.3, 0.21, 0.2, 0);
+  const upper = limb(trunk.tip, 0.8, 0.21, 0.16, -0.38, 0.4);
+  const forks = [
+    limb(upper.tip, 1.1, 0.13, 0.07, 0.75, 0.3),
+    limb(upper.tip, 1.0, 0.12, 0.07, 0.7, 2.4),
+    limb(upper.tip, 0.9, 0.11, 0.06, 0.55, 4.3),
+  ];
+  const parts = [trunk.g, upper.g, ...forks.map((f) => f.g)];
+  const clouds = [
+    [forks[0].tip, 1.15], [forks[1].tip, 1.05], [forks[2].tip, 0.95],
+    [upper.tip.clone().add(new THREE.Vector3(0, 1.25, 0)), 1.0], // crown top
+  ];
+  clouds.forEach(([c, r], i) => {
+    const g = roughen(new THREE.IcosahedronGeometry(r, 0).scale(1.3, 0.75, 1.3), 0.18, i * 17 + 5).translate(c.x, c.y + 0.25, c.z);
+    parts.push(paint(g, OLIVE_GREENS[i % OLIVE_GREENS.length], 0, LEAF));
+  });
+  return merge(parts);
 }
 
 /** Vertex-coloured props; parts flagged aGlow light up warm at night (lantern glass). */
 export function createStreetPropMaterial(uniforms) {
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0.1 });
-  mat.customProgramCacheKey = () => 'street-props-v1';
+  mat.customProgramCacheKey = () => 'street-props-v2';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = uniforms.uNight;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aGlow;\nvarying float vGlow;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vGlow = aGlow;');
+      .replace('#include <common>', '#include <common>\nattribute float aGlow;\nattribute vec3 aSurf;\nvarying float vGlow;\nvarying vec3 vSurf;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vGlow = aGlow;\n  vSurf = aSurf;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uNight;\nvarying float vGlow;')
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vec3(1.0, 0.78, 0.45) * vGlow * (0.15 + 3.0 * uNight);');
+      .replace('#include <common>', '#include <common>\nuniform float uNight;\nvarying float vGlow;\nvarying vec3 vSurf;')
+      // Per-part surface: matte foliage and stone, satin iron.
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = vSurf.x;')
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = vSurf.y;')
+      .replace('#include <emissivemap_fragment>', [
+        '#include <emissivemap_fragment>',
+        '  totalEmissiveRadiance += vec3(1.0, 0.78, 0.45) * vGlow * (0.15 + 3.0 * uNight);',
+        '  // Foliage lets some daylight through: shaded leaves keep a little of their colour',
+        '  // instead of going flat black (a cheap stand-in for subsurface scattering).',
+        '  totalEmissiveRadiance += diffuseColor.rgb * vSurf.z * 0.14 * (1.0 - 0.85 * uNight);',
+      ].join('\n'));
   };
   return mat;
 }
