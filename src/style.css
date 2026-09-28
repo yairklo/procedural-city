@@ -1,0 +1,36 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #0e1116;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+#app {
+  position: fixed;
+  inset: 0;
+}
+#app canvas {
+  display: block;
+}
+#hud {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  max-width: min(360px, calc(100vw - 48px));
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(10, 14, 20, 0.72);
+  color: #e6edf3;
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+  white-space: pre-line;
+  font-variant-numeric: tabular-nums;
+}
+#hud strong {
+  font-size: 14px;
+}
+#hud .dim {
+  color: #9aa7b4;
+}
