@@ -158,6 +158,28 @@
    }
   },
   {
+   "id": "5_0",
+   "i": 5,
+   "j": 0,
+   "bbox": {
+    "south": 31.765,
+    "west": 35.235,
+    "north": 31.77,
+    "east": 35.241
+   },
+   "file": "osm_5_0.json",
+   "bytes": 76522,
+   "fetchedAt": "2026-09-28T20:02:03.929Z",
+   "stats": {
+    "buildings": 360,
+    "roads": 65,
+    "roadAreas": 0,
+    "parks": 2,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
    "id": "0_1",
    "i": 0,
    "j": 1,
@@ -268,6 +290,28 @@
    }
   },
   {
+   "id": "5_1",
+   "i": 5,
+   "j": 1,
+   "bbox": {
+    "south": 31.77,
+    "west": 35.235,
+    "north": 31.775,
+    "east": 35.241
+   },
+   "file": "osm_5_1.json",
+   "bytes": 98526,
+   "fetchedAt": "2026-09-28T20:01:49.520Z",
+   "stats": {
+    "buildings": 352,
+    "roads": 114,
+    "roadAreas": 0,
+    "parks": 11,
+    "trees": 18,
+    "places": 0
+   }
+  },
+  {
    "id": "0_2",
    "i": 0,
    "j": 2,
@@ -374,6 +418,94 @@
     "roadAreas": 6,
     "parks": 24,
     "trees": 88,
+    "places": 0
+   }
+  },
+  {
+   "id": "5_2",
+   "i": 5,
+   "j": 2,
+   "bbox": {
+    "south": 31.775,
+    "west": 35.235,
+    "north": 31.78,
+    "east": 35.241
+   },
+   "file": "osm_5_2.json",
+   "bytes": 48772,
+   "fetchedAt": "2026-09-28T20:01:52.257Z",
+   "stats": {
+    "buildings": 53,
+    "roads": 132,
+    "roadAreas": 2,
+    "parks": 11,
+    "trees": 76,
+    "places": 0
+   }
+  },
+  {
+   "id": "3_3",
+   "i": 3,
+   "j": 3,
+   "bbox": {
+    "south": 31.78,
+    "west": 35.223,
+    "north": 31.785,
+    "east": 35.229
+   },
+   "file": "osm_3_3.json",
+   "bytes": 115353,
+   "fetchedAt": "2026-09-28T20:01:55.424Z",
+   "stats": {
+    "buildings": 195,
+    "roads": 270,
+    "roadAreas": 3,
+    "parks": 17,
+    "trees": 123,
+    "places": 0
+   }
+  },
+  {
+   "id": "4_3",
+   "i": 4,
+   "j": 3,
+   "bbox": {
+    "south": 31.78,
+    "west": 35.229,
+    "north": 31.785,
+    "east": 35.235
+   },
+   "file": "osm_4_3.json",
+   "bytes": 194556,
+   "fetchedAt": "2026-09-28T20:01:58.534Z",
+   "stats": {
+    "buildings": 653,
+    "roads": 250,
+    "roadAreas": 8,
+    "parks": 29,
+    "trees": 74,
+    "places": 0
+   }
+  },
+  {
+   "id": "5_3",
+   "i": 5,
+   "j": 3,
+   "bbox": {
+    "south": 31.78,
+    "west": 35.235,
+    "north": 31.785,
+    "east": 35.241
+   },
+   "file": "osm_5_3.json",
+   "bytes": 111449,
+   "fetchedAt": "2026-09-28T20:02:01.283Z",
+   "stats": {
+    "buildings": 242,
+    "roads": 197,
+    "roadAreas": 4,
+    "parks": 23,
+    "trees": 196,
     "places": 0
    }
   }

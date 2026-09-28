@@ -10,6 +10,8 @@
 //   node scripts/fetch_tiles.js --phase 1            # fetch missing tiles of phase 1
 //   node scripts/fetch_tiles.js --tiles 0_0,1_0      # specific tiles
 //   node scripts/fetch_tiles.js --phase 1 --force    # refetch even if the file exists
+//   node scripts/fetch_tiles.js --tiles 5_2 --source osm-api   # the main OSM API instead of Overpass
+//     (--source auto, the default, tries Overpass first and falls back to the main API)
 //
 // Ownership (no duplicates across tiles; tile bounds are half-open [south, north) x [west, east)):
 //   buildings, road areas, parks: the tile containing the centroid of the outer ring
@@ -24,6 +26,7 @@ import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildQuery, convertOverpass } from './fetch_jerusalem.js';
+import { fetchOsmMap, toOverpassJson, cityFeatureFilter } from './osm_api.js';
 import { gridCellBBox, inBBox, ringVertexAverage, ownedRuns } from '../src/city/tiling.js';
 
 /** Tile (i, j) covers lon [west + i*dLon, +dLon) and lat [south + j*dLat, +dLat). i grows east, j grows north. */
@@ -134,6 +137,19 @@ async function fetchOverpass(query, label) {
   throw lastError;
 }
 
+/** Raw Overpass-style JSON for one tile, from Overpass or the main OSM API (same selection). */
+async function fetchTileRaw(i, j, id, source) {
+  if (source !== 'osm-api') {
+    try {
+      return await fetchOverpass(buildQuery(tileBBox(i, j)), id);
+    } catch (err) {
+      if (source === 'overpass') throw err;
+      console.warn(`[tiles] ${id}: Overpass unavailable (${err.message}); using the main OSM API`);
+    }
+  }
+  return toOverpassJson(await fetchOsmMap(tileBBox(i, j)), cityFeatureFilter);
+}
+
 async function exists(path) {
   try {
     await access(path);
@@ -157,6 +173,8 @@ async function main(argv) {
     return k >= 0 ? argv[k + 1] : null;
   };
   const force = argv.includes('--force');
+  const source = arg('--source') ?? 'auto';
+  if (!['auto', 'overpass', 'osm-api'].includes(source)) throw new Error('--source must be auto, overpass or osm-api');
   let wanted = [];
   if (arg('--tiles')) {
     wanted = arg('--tiles').split(',').map((s) => s.split('_').map(Number));
@@ -189,7 +207,7 @@ async function main(argv) {
     }
     let raw;
     try {
-      raw = await fetchOverpass(buildQuery(tileBBox(i, j)), id);
+      raw = await fetchTileRaw(i, j, id, source);
     } catch (err) {
       // Tiles are independent: record the failure and keep going; rerun later to fill gaps.
       failed.push(id);
