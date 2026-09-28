@@ -260,12 +260,18 @@ export class TileWorld {
     this.groundGroup = new THREE.Group();
     this.groundGroup.name = 'Ground';
     this.group.add(this.groundGroup);
-    // Coarse terrain around the whole world (runs under the cells, 0.3 m lower).
+    // Coarse terrain around the world: a frame of four strips outside the cells' area. (It used
+    // to run under the cells, 0.3 m lower; with a detailed DEM its 48 m grid rises above the
+    // cells' finer ground in every hollow, over streets and valleys, and covered the floor.)
     const r = this.o.surroundReach;
-    const surround = new THREE.Mesh(
-      terrainGeometry(t, { minX: b.minX - r, maxX: b.maxX + r, minZ: b.minZ - r, maxZ: b.maxZ + r }, 48, -0.3),
-      this.outerMaterial,
-    );
+    const strips = [
+      { minX: b.minX - r, maxX: b.maxX + r, minZ: b.minZ - r, maxZ: b.minZ },
+      { minX: b.minX - r, maxX: b.maxX + r, minZ: b.maxZ, maxZ: b.maxZ + r },
+      { minX: b.minX - r, maxX: b.minX, minZ: b.minZ, maxZ: b.maxZ },
+      { minX: b.maxX, maxX: b.maxX + r, minZ: b.minZ, maxZ: b.maxZ },
+    ].map((rect) => terrainGeometry(t, rect, 48, -0.3));
+    const surround = new THREE.Mesh(mergeGeometries(strips, false), this.outerMaterial);
+    for (const g of strips) g.dispose();
     surround.name = 'TerrainSurroundings';
     surround.receiveShadow = true;
     // The flat outer ground is a frame around the surroundings mesh, not a plane under the
