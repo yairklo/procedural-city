@@ -41,6 +41,8 @@ export const DEFAULT_CITY_OPTIONS = Object.freeze({
    * [{ ring: [lat, lon, ...], floorsMin, floorsMax, shops }] (landmarks.json `oldCity`: 2-3
    * storeys inside the Old City walls instead of the modern city's defaultFloorsMin-Max; the
    * Temple Mount: 1 storey, `shops: false`). The first area containing a building wins.
+   * Optional `tileRoofMaxArea` overrides the option below inside the area (Yemin Moshe: its
+   * row houses are mapped as large blocks with a pitched roof).
    */
   lowRiseAreas: [],
   /** How far building walls continue below the lowest ground point under them (hides gaps on slopes). */
@@ -270,7 +272,7 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
   let heightFromOsm = 0;
 
   const excluded = new Set(o.excludeBuildings ?? []);
-  const lowRise = (o.lowRiseAreas ?? []).map((a) => ({ rings: [proj.projectFlat(a.ring)], shops: a.shops ?? true, o: { ...o, defaultFloorsMin: a.floorsMin ?? 2, defaultFloorsMax: a.floorsMax ?? 3 } }));
+  const lowRise = (o.lowRiseAreas ?? []).map((a) => ({ rings: [proj.projectFlat(a.ring)], shops: a.shops ?? true, o: { ...o, defaultFloorsMin: a.floorsMin ?? 2, defaultFloorsMax: a.floorsMax ?? 3, tileRoofMaxArea: a.tileRoofMaxArea ?? o.tileRoofMaxArea } }));
   for (const src of osm.buildings ?? []) {
     if (excluded.size && (excluded.has(src.id) || excluded.has(String(src.id).split('-')[0]))) continue;
     const rings = projectRings(src.rings);
@@ -299,7 +301,7 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
     const cls = buildingClass(tags);
     const shop = cls !== 'ordinary' || (area0 && !area0.shops) ? 0 : tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
     const street = tags['addr:street'];
-    const roof = !canopy && PITCHED_ROOFS.has(tags['roof:shape']) && area <= o.tileRoofMaxArea && h.floors <= o.tileRoofMaxFloors
+    const roof = !canopy && PITCHED_ROOFS.has(tags['roof:shape']) && area <= (area0 ? area0.o : o).tileRoofMaxArea && h.floors <= o.tileRoofMaxFloors
       ? hipRoof(rings[0], area, topY, o, styleRng)
       : null;
     const building = {

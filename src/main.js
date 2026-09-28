@@ -15,6 +15,7 @@ import { RoadNetwork } from './city/RoadNetwork.js';
 import { PedestrianSystem } from './city/PedestrianSystem.js';
 import { RiggedPedestrians } from './city/RiggedPedestrians.js';
 import { buildLandmarks } from './city/landmarks/LandmarkLayer.js';
+import { buildHinnom } from './city/landmarks/hinnom.js';
 import { TrafficSystem } from './city/TrafficSystem.js';
 import { WindAudio } from './audio/WindAudio.js';
 import { BenchmarkHUD } from './ui/BenchmarkHUD.js';
@@ -185,6 +186,8 @@ const getJson = async (url, { optional = false } = {}) => {
 
 /** @type {ReturnType<typeof buildLandmarks> | null} */
 let landmarkLayer = null;
+/** @type {ReturnType<typeof buildHinnom> | null} */
+let hinnomLayer = null;
 
 /**
  * Unmapped-height buildings: single storey, no shopfronts on the Temple Mount (small
@@ -201,17 +204,20 @@ function lowRiseAreas(landmarks) {
 }
 
 async function loadWorld() {
-  const [manifest, dem, legacy, landmarks] = await Promise.all([
+  const [manifest, dem, legacy, landmarks, hinnom] = await Promise.all([
     getJson(`${DATA}tiles/manifest.json`),
     getJson(`${DATA}tiles/dem_points.json`),
     // The old city-centre file stays as a "legacy" source until tiles cover it.
     getJson(`${DATA}jerusalem_data.json`, { optional: true }),
     // Old City landmarks (walls, gates, Western Wall, Tower of David, Holy Sepulchre).
     getJson(`${DATA}landmarks.json`, { optional: true }),
+    // The Hinnom Valley: Mishkenot Sha'ananim, the windmill, Sultan's Pool, terraces.
+    getJson(`${DATA}hinnom.json`, { optional: true }),
   ]);
   // Landmark terrain patches (the esplanade, the plaza below the Western Wall) go into the
   // elevation data itself, so the main thread and the cell worker build the same terrain.
   if (landmarks?.patches?.length) dem.patches = landmarks.patches;
+  if (hinnom?.patches?.length) dem.patches = [...(dem.patches ?? []), ...hinnom.patches];
   // Cell generation and geometry building run in a web worker (no hitches when cells stream
   // in); if workers are unavailable the world falls back to building on the main thread.
   let backend = null;
@@ -225,7 +231,10 @@ async function loadWorld() {
     manifest, dem, legacy, loadTile: (file) => getJson(`${DATA}tiles/${file}`), backend,
     // Buildings the landmark models replace are not generated from the map data.
     // Inside the Old City, buildings without a mapped height are low-rise (2-3 storeys).
-    options: landmarks ? { city: { excludeBuildings: landmarks.replaces ?? [], lowRiseAreas: lowRiseAreas(landmarks) } } : {},
+    options: landmarks || hinnom ? { city: {
+      excludeBuildings: [...(landmarks?.replaces ?? []), ...(hinnom?.replaces ?? [])],
+      lowRiseAreas: [...(landmarks ? lowRiseAreas(landmarks) : []), ...(hinnom?.lowRise ?? [])],
+    } } : {},
   });
   scene.add(world.group);
   if (landmarks) {
@@ -236,6 +245,21 @@ async function loadWorld() {
       console.info('[landmarks]', landmarkLayer.stats);
     } catch (err) {
       console.error('[landmarks] could not be built:', err);
+    }
+  }
+  if (hinnom) {
+    try {
+      hinnomLayer = buildHinnom(hinnom, {
+        projection: world.projection, terrain: world.terrain, collision: world.collision, uniforms: world.uniforms,
+        props: { material: world.materials.props, olive: world.materials.geometries.olive, cypress: world.materials.geometries.cypress },
+      });
+      lighting.setupMaterial(hinnomLayer.material);
+      // The groves only cast shadows into the near cascades, like the city's trees.
+      hinnomLayer.group.traverse((o) => o.isInstancedMesh && lighting.nearShadowsOnly(o));
+      scene.add(hinnomLayer.group);
+      console.info('[hinnom]', hinnomLayer.stats);
+    } catch (err) {
+      console.error('[hinnom] could not be built:', err);
     }
   }
   lighting.setupMaterial(world.groundMaterial);
@@ -281,6 +305,7 @@ async function loadWorld() {
   window.world = world;
   window.debug = {
     landmarks: landmarkLayer,
+    hinnom: hinnomLayer,
     camera, playerCamera, player, proxy, character, scene, renderer, lighting, post, world, pedestrians, traffic, freeCam, wind,
     setNight: (v) => { night = nightTarget = v; applyLook(v); },
   };
