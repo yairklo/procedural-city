@@ -53,7 +53,7 @@ export class BenchmarkHUD {
       '<hr><div class="legend">' +
       '<span><kbd>WASD</kbd> Move</span><span><kbd>Space</kbd> Jump / Glide</span>' +
       '<span><kbd>N</kbd> Toggle Night</span><span><kbd>C</kbd> Free Cam</span>' +
-      '<span><kbd>M</kbd> Mute</span><span><kbd>B</kbd> Hide</span></div>';
+      '<span><kbd>G</kbd> Map</span><span><kbd>M</kbd> Mute</span><span><kbd>B</kbd> Hide</span></div>';
   }
 
   dispose() {

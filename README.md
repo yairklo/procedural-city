@@ -17,7 +17,7 @@ Controls: WASD move (camera-relative) · Shift run · Space jump (hold for highe
 toward a ledge to mantle onto it · **hold Space in the air to glide** (W dive, S climb, A/D
 or mouse to steer) · click for mouse look (or drag), wheel zoom · E debug super-jump ·
 N day/night · C free camera (WASD fly, Q/E down/up, Shift fast, wheel speed) · M mute the
-wind · B hide the stats panel · P post-processing on/off · R respawn · H hide the controls line.
+wind · B hide the stats panel · G minimap · P post-processing on/off · R respawn · H hide the controls line.
 
 ## Living city (Phase 4)
 
@@ -65,6 +65,46 @@ the street life costs about ten draw calls per pass.
   310–330 draw calls per frame at street level, day or night.
 - `src/player/FreeCamera.js` (C): fly anywhere. The player waits, and the world streams in
   around the camera.
+
+## Street polish, minimap, atmosphere
+
+- Worn, polished paving (`src/city/footfall.js`): as cells load, their roads are painted into
+  a coarse "footfall" map, the green channel of the ground mask (16 m texels).
+  - The painting is weighted by class. Pedestrian malls and squares score highest, then
+    footways and living streets, then main-street sidewalks; quiet streets score little.
+  - Where footfall is high, the ground shader polishes the slab tops (roughness down to
+    ~0.35, slightly darker and warmer, the joints stay rough). Each slab also gets its own
+    slight tilt, so in the low golden-hour sun the glints jump from slab to slab as the
+    camera moves.
+  - Pedestrian streets always count as busy.
+  - Asphalt gets smoother binder patches and the odd sparkling grain.
+- Awnings (`src/city/Awnings.js`): fabric canopies over ground-floor shopfronts.
+  - They use the facade shader's 4.2 m shop-bay grid, so each one sits between the glazing
+    and the sign band of a real shopfront.
+  - Only walls facing a street get them, and not where a hillside sidewalk has climbed over
+    the shop floor.
+  - Colours: striped dark red, green or navy with off-white, or solid terracotta, canvas,
+    green or red.
+  - Two instanced meshes per nearby cell (striped / solid). The centre data gets about 675.
+- Minimap (`src/ui/Minimap.js`, bottom left, G toggles): a round, north-up GPS map drawn by
+  the game from the loaded OSM data, with no map images.
+  - Shows streets in dark slate `#2A2D34`, building footprints in translucent `#E0DCD3`, the
+    Jaffa Road light rail in teal, and the player as a heading arrow.
+  - `worldToUV` places points in the geographic box S 31.778 / W 35.210 / N 31.788 /
+    E 35.225, through the game's projection.
+  - The map is drawn into an offscreen canvas around the player, a few cells per frame
+    within a ~2.5 ms budget, and redrawn in a second canvas that is swapped in. A frame only
+    copies a window and draws the arrow: no per-frame allocations.
+- Bloom (`src/render/postprocessing.js` `BLOOM`) is calibrated against the scene's
+  linear-HDR levels:
+  - By day the threshold is 2.4. Sunlit stone (~2) doesn't bloom; the gold dome and
+    polished-paving glints do.
+  - At night the threshold is 0.95 with a tighter radius and a soft knee. Lanterns (~3),
+    headlights (~4), tail lights and lit shops and windows (~1) get clean halos, while
+    floodlit stone (< 0.6) stays crisp.
+- Dust motes (`src/render/DustMotes.js`): 700 warm specks drifting in a 22 m box around the
+  camera, brightest when you look toward the sun, barely visible at night. One draw call,
+  animated entirely in the shader, and hidden from the ambient-occlusion pass.
 
 ## Player: traversal and tallit gliding
 

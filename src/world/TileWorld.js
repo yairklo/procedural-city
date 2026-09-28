@@ -32,6 +32,7 @@ import {
   terrainGeometry, findRoadsAt, MAJOR_HIGHWAYS, DEFAULT_CITY_OPTIONS,
 } from '../city/CityGenerator.js';
 import { LocalCellBackend } from './cellBackends.js';
+import { paintFootfall } from '../city/footfall.js';
 
 export const LEVELS = ['none', 'far', 'medium', 'near'];
 const RANK = { none: 0, far: 1, medium: 2, near: 3 };
@@ -237,7 +238,7 @@ export class TileWorld {
         const cell = this.cellAt(px, pz);
         const inLegacy = legacyRect && cell?.source === 'legacy' && px >= legacyRect.minX && px <= legacyRect.maxX && pz >= legacyRect.minZ && pz <= legacyRect.maxZ;
         const v = cell && (cell.source === 'tile' || inLegacy) ? 255 : 0;
-        data.set([v, v, v, 255], (y * w + x) * 4);
+        data.set([v, 0, v, 255], (y * w + x) * 4); // g: footfall, painted as cells load
       }
     }
     const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat);
@@ -245,6 +246,14 @@ export class TileWorld {
     tex.minFilter = THREE.LinearFilter;
     tex.needsUpdate = true;
     return tex;
+  }
+
+  /** Paints a cell's roads into the ground mask's footfall channel (green); see footfall.js. */
+  _addFootfall(data) {
+    const tex = this.groundMask;
+    if (!tex || !data?.roads?.length) return;
+    const { data: px, width, height } = tex.image;
+    if (paintFootfall(px, width, height, this.bounds, data.roads, 1)) tex.needsUpdate = true;
   }
 
   _latLonRect(bb) {
@@ -425,6 +434,7 @@ export class TileWorld {
       await null; // always settle asynchronously, after `task` is registered below
       try {
         cell.data = await this.backend.generate(cell);
+        this._addFootfall(cell.data);
       } catch (err) {
         // A tile listed in the manifest but missing or broken: show terrain only, keep going.
         cell.failed = true;

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { TileWorld } from './world/TileWorld.js';
 import { WorkerCellBackend } from './world/cellBackends.js';
-import { createLighting } from './render/lighting.js';
+import { createLighting, sunDirection } from './render/lighting.js';
 import { createPostProcessing } from './render/postprocessing.js';
 import { createSurroundings } from './render/surroundings.js';
 import { createBenchmark, formatBenchmark } from './debug/benchmark.js';
@@ -18,6 +18,8 @@ import { buildLandmarks } from './city/landmarks/LandmarkLayer.js';
 import { TrafficSystem } from './city/TrafficSystem.js';
 import { WindAudio } from './audio/WindAudio.js';
 import { BenchmarkHUD } from './ui/BenchmarkHUD.js';
+import { Minimap } from './ui/Minimap.js';
+import { DustMotes } from './render/DustMotes.js';
 import './style.css';
 
 // ------------------------------------------------------------------------------------------------
@@ -47,6 +49,9 @@ const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerH
 const lighting = createLighting({ renderer, scene, camera });
 const post = createPostProcessing(renderer, scene, camera);
 const surroundings = createSurroundings({ scene });
+const dust = new DustMotes({ sunDirection: sunDirection() });
+scene.add(dust.object3D);
+post.noAO.push(dust.object3D);
 
 let night = 0;
 let nightTarget = 0;
@@ -55,6 +60,7 @@ function applyLook(t) {
   lighting.setNight(t);
   surroundings.setNight(t);
   post.setNight(t);
+  dust.setNight(t);
   world?.setNight(t);
 }
 
@@ -98,6 +104,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyC') toggleFreeCam();
   if (e.code === 'KeyM') wind.toggleMute();
   if (e.code === 'KeyB') benchHud.toggle();
+  if (e.code === 'KeyG') minimap?.toggle();
   if (e.code === 'KeyN') nightTarget = nightTarget > 0.5 ? 0 : 1;
   if (e.code === 'KeyR' && !freeCam.enabled) respawn();
   if (e.code === 'KeyP') post.enabled = !post.enabled;
@@ -143,6 +150,26 @@ function readInput() {
 
 /** @type {TileWorld | null} */
 let world = null;
+/** @type {Minimap | null} */
+let minimap = null;
+const _mapDir = new THREE.Vector3();
+const _mapPlayer = { x: 0, z: 0, yaw: 0 };
+
+/** The minimap follows the player (or the free / benchmark camera, pointing where it looks). */
+function updateMinimap(snap, flying) {
+  if (!minimap) return;
+  if (flying || !snap) {
+    camera.getWorldDirection(_mapDir);
+    _mapPlayer.x = camera.position.x;
+    _mapPlayer.z = camera.position.z;
+    _mapPlayer.yaw = Math.atan2(-_mapDir.x, -_mapDir.z);
+  } else {
+    _mapPlayer.x = snap.position.x;
+    _mapPlayer.z = snap.position.z;
+    _mapPlayer.yaw = snap.yaw;
+  }
+  minimap.update(_mapPlayer, world, traffic?.rail?.path.points ?? null);
+}
 /** @type {PedestrianSystem | null} */
 let pedestrians = null;
 /** @type {TrafficSystem | null} */
@@ -219,6 +246,7 @@ async function loadWorld() {
   const spawn = await world.findSpawn();
   player = new PlayerController(world.collision, spawn);
   character.bind(player);
+  minimap = new Minimap({ projection: world.projection });
   playerCamera ??= new PlayerCamera(camera, renderer.domElement, world.collision);
   playerCamera.setCollision(world.collision);
   player.on('land', (e) => {
@@ -412,7 +440,9 @@ renderer.setAnimationLoop(() => {
     world.update(flying ? camera.position : player.position);
     world.updateCamera(camera);
     updateStreetLife(dt, snap);
+    updateMinimap(snap, flying);
   }
+  dust.update(camera, timer.elapsedTime, renderer.getPixelRatio());
   renderer.info.reset();
   post.render(dt);
   if (world && player) {

@@ -3,7 +3,10 @@
 //   RenderPass (4x MSAA, half-float HDR)
 //   -> GTAO     ground-truth ambient occlusion: contact darkening where walls meet streets,
 //               in alleys, courtyards and under roof equipment
-//   -> Bloom    soft glow only on the brightest highlights (sunlit white stone, lit windows)
+//   -> Bloom    halos only around real light sources: by day just the brightest glints (the
+//               gold dome, polished paving in low sun) - sunlit stone (~2 in linear HDR)
+//               stays below the threshold; at night lanterns (~3), headlights (~4), tail
+//               lights and lit shops / windows (~1) glow, floodlit stone (< 0.6) doesn't
 //   -> Grade    warm white balance + a little saturation (golden-hour limestone)
 //   -> Vignette
 //   -> Output   ACES Filmic tone mapping + sRGB (uses renderer.toneMapping / exposure)
@@ -49,20 +52,26 @@ export function createPostProcessing(renderer, scene, camera) {
   });
   gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, radiusExponent: 1, rings: 2, samples: 12 });
   // GTAO renders the scene again for normals/depth. Without this, that render would also
-  // redraw every shadow map (all cascades, all casters) a second time each frame.
+  // redraw every shadow map (all cascades, all casters) a second time each frame. Objects in
+  // `noAO` (particles, additive glows) are hidden from that pass: they have no surface.
+  const noAO = [];
   const gtaoRender = gtao.render.bind(gtao);
   gtao.render = (...args) => {
     const auto = renderer.shadowMap.autoUpdate;
     renderer.shadowMap.autoUpdate = false;
+    const shown = noAO.map((o) => o.visible);
+    for (const o of noAO) o.visible = false;
     try {
       gtaoRender(...args);
     } finally {
       renderer.shadowMap.autoUpdate = auto;
+      noAO.forEach((o, i) => (o.visible = shown[i]));
     }
   };
   composer.addPass(gtao);
 
-  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.16, 0.45, 1.4);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), BLOOM.day.strength, BLOOM.day.radius, BLOOM.day.threshold);
+  bloom.highPassUniforms.smoothWidth.value = BLOOM.day.knee; // soft knee: no hard-edged halos
   composer.addPass(bloom);
 
   const grade = new ShaderPass(GradeShader);
@@ -79,6 +88,7 @@ export function createPostProcessing(renderer, scene, camera) {
     composer,
     gtao,
     bloom,
+    noAO,
     grade,
     vignette,
     enabled: true,
@@ -92,12 +102,21 @@ export function createPostProcessing(renderer, scene, camera) {
     },
     /** Night: stronger bloom so lit windows glow. */
     setNight(t) {
-      bloom.strength = THREE.MathUtils.lerp(0.16, 0.45, t);
-      bloom.threshold = THREE.MathUtils.lerp(1.4, 0.5, t);
+      const a = BLOOM.day, b = BLOOM.night, L = THREE.MathUtils.lerp;
+      bloom.strength = L(a.strength, b.strength, t);
+      bloom.radius = L(a.radius, b.radius, t);
+      bloom.threshold = L(a.threshold, b.threshold, t);
+      bloom.highPassUniforms.smoothWidth.value = L(a.knee, b.knee, t);
       grade.uniforms.warmth.value = THREE.MathUtils.lerp(1, 0, t);
     },
   };
 }
+
+/** Bloom by time of day (thresholds are linear-HDR luminance, before exposure). */
+export const BLOOM = Object.freeze({
+  day: { strength: 0.12, radius: 0.3, threshold: 2.4, knee: 0.6 },
+  night: { strength: 0.55, radius: 0.32, threshold: 0.95, knee: 0.35 },
+});
 
 /** Linear-HDR color grade applied before tone mapping. */
 const GradeShader = {

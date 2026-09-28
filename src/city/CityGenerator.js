@@ -19,6 +19,7 @@ import { CityCollisionWorld } from './CityCollision.js';
 import { createProjection } from './geo.js';
 import { createTerrain, footprintGround, FLAT_TERRAIN } from './terrain.js';
 import { generateStreetProps, createStreetPropGeometries, createStreetPropMaterial, createLightPoolMaterial } from './StreetProps.js';
+import { generateAwnings, createAwningGeometry, createAwningMaterial } from './Awnings.js';
 import {
   cleanRing, orientRings, footprintArea, ringsBounds, ringCentroid, pointInRings, distanceToEdges,
   discInside, segmentDistance, decomposeFootprint, orientedBox, simplifyRing,
@@ -411,6 +412,8 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
 
   // Street furniture and Mediterranean trees (adds their collision boxes).
   const street = generateStreetProps({ roads, parks, osmTrees: trees, terrain, rng: rng.fork('street'), collision });
+  // Fabric awnings over street-facing shopfronts.
+  street.awnings = generateAwnings({ buildings, roadsAt: (x, z) => findRoadsAt({ roads, roadGrid }, x, z), ground: terrain.heightAt, rng: rng.fork('awnings') });
 
   // Extent of everything in the chunk (buildings, roads, parks), for culling and lookups.
   const bounds = { minX: Infinity, minZ: Infinity, maxX: -Infinity, maxZ: -Infinity };
@@ -455,6 +458,7 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
       acUnits: ac.length,
       lanterns: street.lamps.length,
       benches: street.benches.length,
+      awnings: street.awnings.length,
       streetTrees: street.trees.length,
       colliders: collision.count,
     },
@@ -1798,7 +1802,14 @@ float surfRough = 0.0;
   float dirt = cityFbm(p * 0.25);
   vec3 slab = base * mix(0.95, 1.04, tone) * mix(0.9, 1.02, dirt);
   diffuseColor.rgb = mix(mix(slab, base * 0.82, joint), base * mix(0.93, 1.0, dirt), fade);
-  surfBump = vec2(cityBevel(f.x, 1.0 - f.x, 0.012, 0.05), cityBevel(f.y, 1.0 - f.y, 0.018, 0.07)) * -0.3 * (1.0 - fade);
+  // Pedestrian streets and squares are the busiest ground: polished slab tops in broad worn
+  // lanes (see the ground material), each slab slightly tilted so the glints move.
+  float worn = mix(0.45, 1.0, smoothstep(0.3, 0.7, cityFbm(p * 0.12 + 5.0))) * mix(0.55, 1.0, cityHash(vec3(floor(cell), 8.0))) * (1.0 - joint);
+  diffuseColor.rgb *= mix(1.0, 0.9, worn);
+  diffuseColor.rgb += vec3(0.02, 0.012, 0.0) * worn;
+  surfRough = -0.55 * worn * (1.0 - fade * 0.5);
+  vec2 tilt = (vec2(cityHash(vec3(floor(cell), 11.0)), cityHash(vec3(floor(cell), 12.0))) - 0.5) * 0.09 * worn * (1.0 - fade);
+  surfBump = vec2(cityBevel(f.x, 1.0 - f.x, 0.012, 0.05), cityBevel(f.y, 1.0 - f.y, 0.018, 0.07)) * -0.3 * (1.0 - fade) + tilt;
 #elif defined(SURF_ASPHALT)
   float grain = cityHash(vec3(floor(p * 30.0), 1.0));
   float mottle = cityFbm(p * 0.08);
@@ -1811,7 +1822,11 @@ float surfRough = 0.0;
   a = mix(a, base * 0.7, patched);
   diffuseColor.rgb = a;
   surfBump = (vec2(grain, cityHash(vec3(floor(p * 30.0), 2.0))) - 0.5) * 0.25 * (1.0 - gfade);
-  surfRough = -0.1 * mottle;
+  // Smoother binder-rich patches and polished wheel paths, plus the odd smooth aggregate
+  // grain that sparkles in low sun.
+  float sealed = smoothstep(0.55, 0.8, cityFbm(p * 0.35 + 9.0));
+  float sparkle = step(0.965, cityHash(vec3(floor(p * 30.0), 3.0))) * (1.0 - gfade);
+  surfRough = -0.1 * mottle - 0.22 * sealed - 0.35 * sparkle;
 #elif defined(SURF_CURB)
   float seg = fract((p.x + p.y) / 0.9);
   float joint = 1.0 - smoothstep(0.0, 0.03 + fwidth((p.x + p.y) / 0.9), min(seg, 1.0 - seg));
@@ -1826,7 +1841,7 @@ float surfRough = 0.0;
 #endif
 }`,
       )
-      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + surfRough, 0.0, 1.0);')
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + surfRough, 0.25, 1.0);')
       .replace(
         '#include <emissivemap_fragment>',
         /* glsl */ `#include <emissivemap_fragment>
@@ -1868,6 +1883,8 @@ export function createCityMaterials(uniforms, options = {}) {
     crown: new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true }),
     props: createStreetPropMaterial(uniforms),
     pool: createLightPoolMaterial(uniforms),
+    awningStriped: createAwningMaterial(uniforms, { striped: true }),
+    awningSolid: createAwningMaterial(uniforms),
   };
   const geometries = {
     ...createStreetPropGeometries(),
@@ -1875,6 +1892,7 @@ export function createCityMaterials(uniforms, options = {}) {
     box: new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0),
     trunk: new THREE.CylinderGeometry(1, 1, 1, 6).translate(0, 0.5, 0),
     crown: new THREE.IcosahedronGeometry(1, 1),
+    awning: createAwningGeometry(),
   };
   return {
     ...materials,
@@ -1975,6 +1993,9 @@ export function buildChunkParts(chunk, { terrain = FLAT_TERRAIN, level = 'near' 
       inst('Bollards', 'props', 'bollard', st.bollards.map((b) => item(b)), { detail: true });
       inst('Cypresses', 'props', 'cypress', st.trees.filter((t) => t.species === 'cypress').map((t) => item(t)));
       inst('Olives', 'props', 'olive', st.trees.filter((t) => t.species === 'olive').map((t) => item(t, 0xe8eee0)));
+      const awning = (a) => ({ x: a.x, y: a.y, z: a.z, sx: a.w, sy: 1, sz: a.d, ry: a.ry, color: a.color });
+      inst('AwningsStriped', 'awningStriped', 'awning', (st.awnings ?? []).filter((a) => a.striped).map(awning), { detail: true });
+      inst('AwningsSolid', 'awningSolid', 'awning', (st.awnings ?? []).filter((a) => !a.striped).map(awning), { detail: true });
       // Warm pools of light under the lanterns (night only).
       inst('LampPools', 'pool', 'pool', st.lamps.map((l) => ({ x: l.x, y: l.y + 0.12, z: l.z, sx: 16, sy: 1, sz: 16, color: 0xffc27a })), { cast: false, receive: false });
     }
@@ -2071,7 +2092,7 @@ export function unpackChunkParts(parts) {
  */
 export function createGroundMaterial(uniforms, { mask, maskRect }) {
   const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, metalness: 0 });
-  mat.customProgramCacheKey = () => 'world-ground-v1';
+  mat.customProgramCacheKey = () => 'world-ground-v2';
   const paving = new THREE.Color(COLORS.ground);
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = uniforms.uNight;
@@ -2095,11 +2116,17 @@ ${GLSL_BEVEL}`)
         '#include <color_fragment>',
         /* glsl */ `#include <color_fragment>
 float groundCity = 0.0;
+float groundRough = 0.0;
 vec2 groundBump = vec2(0.0);
 {
   vec2 p = vGPos.xz;
   vec2 muv = (p - uMaskRect.xy) / (uMaskRect.zw - uMaskRect.xy);
-  if (muv.x >= 0.0 && muv.y >= 0.0 && muv.x <= 1.0 && muv.y <= 1.0) groundCity = texture2D(uCityMask, muv).r;
+  float footfall = 0.0;
+  if (muv.x >= 0.0 && muv.y >= 0.0 && muv.x <= 1.0 && muv.y <= 1.0) {
+    vec4 mask = texture2D(uCityMask, muv);
+    groundCity = mask.r;
+    footfall = mask.g; // see footfall.js
+  }
 
   // Paving: 80 x 50 cm slabs in running bond.
   vec2 cell = vec2(p.x / 0.8, p.y / 0.5);
@@ -2113,6 +2140,19 @@ vec2 groundBump = vec2(0.0);
   vec3 slab = uPaving * mix(0.95, 1.04, cityHash(vec3(floor(cell), 4.0))) * mix(0.9, 1.02, dirt);
   vec3 pave = mix(mix(slab, uPaving * 0.82, joint), uPaving * mix(0.93, 1.0, dirt), fade);
 
+  // Worn, polished slabs where many people walk: smoother (they catch the low sun), a touch
+  // darker and warmer, the joints stay rough. Each slab sits at its own slight tilt, so the
+  // glints move from slab to slab as the camera moves.
+  vec2 slabId = floor(cell);
+  float slabHash = cityHash(vec3(slabId, 8.0));
+  float worn = smoothstep(0.08, 0.9, footfall) * mix(0.55, 1.0, slabHash) * mix(0.7, 1.0, smoothstep(0.25, 0.7, cityFbm(p * 0.35 + 3.0)));
+  float slabTop = 1.0 - joint;
+  pave *= mix(1.0, 0.9, worn * slabTop);
+  pave += vec3(0.02, 0.012, 0.0) * worn * slabTop;
+  float quietRough = 0.04 * (cityFbm(p * 0.6) - 0.5);
+  groundRough = (quietRough - 0.55 * worn * slabTop * (1.0 - fade * 0.5)) * groundCity;
+  vec2 tilt = (vec2(cityHash(vec3(slabId, 11.0)), cityHash(vec3(slabId, 12.0))) - 0.5) * 0.09 * worn * (1.0 - fade);
+
   // Hillside: dry grass and terra rossa, limestone showing through on steeper slopes.
   float n1 = cityFbm(p * 0.012), n2 = cityFbm(p * 0.09 + 7.0), n3 = cityHash(vec3(floor(p * 2.0), 9.0));
   vec3 grass = vec3(0.26, 0.24, 0.13), earth = vec3(0.33, 0.2, 0.12), rock = vec3(0.44, 0.42, 0.37);
@@ -2122,7 +2162,7 @@ vec2 groundBump = vec2(0.0);
   nat *= mix(0.9, 1.06, n3 * (1.0 - fade));
 
   diffuseColor.rgb = mix(nat, pave, groundCity);
-  groundBump = vec2(cityBevel(f.x, 1.0 - f.x, 0.012, 0.05), cityBevel(f.y, 1.0 - f.y, 0.018, 0.07)) * -0.3 * (1.0 - fade) * groundCity;
+  groundBump = (vec2(cityBevel(f.x, 1.0 - f.x, 0.012, 0.05), cityBevel(f.y, 1.0 - f.y, 0.018, 0.07)) * -0.3 * (1.0 - fade) + tilt) * groundCity;
 }`,
       )
       .replace(
@@ -2130,6 +2170,7 @@ vec2 groundBump = vec2(0.0);
         /* glsl */ `#include <normal_fragment_maps>
 normal = normalize(normal + normalize((viewMatrix * vec4(1.0, 0.0, 0.0, 0.0)).xyz) * groundBump.x + normalize((viewMatrix * vec4(0.0, 0.0, 1.0, 0.0)).xyz) * groundBump.y);`,
       )
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + groundRough, 0.25, 1.0);')
       .replace(
         '#include <emissivemap_fragment>',
         /* glsl */ `#include <emissivemap_fragment>
@@ -2164,10 +2205,19 @@ export function chunkLookup(chunk) {
     id: b.id, osmId: b.osmId, kind: b.kind, name: b.name, address: b.address, floors: b.floors,
     height: b.height, heightAboveGround: b.heightAboveGround, heightSource: b.heightSource, centroid: b.centroid,
   }));
+  // Building outlines for the minimap: outer rings simplified to ~1 m, packed flat
+  // ([x, z, ...] in `outlines`; ring k spans outlineStarts[k] .. outlineStarts[k + 1]).
+  const rings = chunk.buildings.map((b) => simplifyRing(b.rings[0], 1));
+  const starts = new Uint32Array(rings.length + 1);
+  for (let k = 0; k < rings.length; k++) starts[k + 1] = starts[k] + rings[k].length;
+  const outlines = new Float32Array(starts[rings.length]);
+  rings.forEach((r, k) => outlines.set(r, starts[k]));
   return {
     id: chunk.id,
     buildings,
     buildingById: new Map(buildings.map((b) => [b.id, b])),
+    outlines,
+    outlineStarts: starts,
     roads: chunk.roads,
     roadGrid: chunk.roadGrid,
     parks: chunk.parks.map((p) => ({ id: p.id, name: p.name })),
