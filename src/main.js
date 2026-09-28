@@ -156,20 +156,27 @@ function followCamera() {
 let city = null;
 
 const DATA_URL = `${import.meta.env.BASE_URL}data/jerusalem_data.json`;
+const ELEVATION_URL = `${import.meta.env.BASE_URL}data/jerusalem_elevation.json`;
 
-async function loadOsm() {
-  const res = await fetch(DATA_URL);
+async function loadData() {
+  const [res, elev] = await Promise.all([fetch(DATA_URL), fetch(ELEVATION_URL).catch(() => null)]);
   if (!res.ok) throw new Error(`${DATA_URL}: HTTP ${res.status}. Run "npm run fetch-data" once to download the OpenStreetMap data.`);
-  return res.json();
+  const osm = await res.json();
+  // Elevation is optional: without it the city is built on flat ground.
+  let elevation = null;
+  if (elev?.ok) elevation = await elev.json().catch(() => null);
+  if (!elevation) console.warn(`[city] no terrain (${ELEVATION_URL}); building on flat ground`);
+  return { osm, elevation };
 }
 
-function buildCity(osm) {
+function buildCity({ osm, elevation }) {
   if (city) {
     scene.remove(city.group);
     city.group.traverse((o) => o.material && lighting.releaseMaterial(o.material));
     city.dispose();
   }
-  city = new CityGenerator({ osm }).create();
+  city = new CityGenerator({ osm, elevation }).create();
+  surroundings.setBaseHeight(city.data.terrain.meanEdge);
   scene.add(city.group);
   city.group.traverse((o) => o.material && lighting.setupMaterial(o.material));
   city.setNight(night);
@@ -225,10 +232,10 @@ function updateHud(dt) {
     `<strong>${data.name}</strong>${place ? ` <span class="dim">· ${place.name}</span>` : ''}\n` +
     `${fps} fps · ${info.calls} draw calls/frame (all passes) · ${(info.triangles / 1000).toFixed(0)}k tris\n` +
     `${data.stats.buildings} buildings · ${data.stats.colliders} colliders · built in ${data.stats.generateMs + data.stats.buildMs} ms\n` +
-    `<span class="dim">at</span> ${where}  <span class="dim">y=${p.y.toFixed(1)}</span>\n` +
-    (touched ? `<span class="dim">touching</span> ${touched.name ?? touched.address ?? touched.id} · ${touched.height.toFixed(1)} m (${touched.heightSource})\n` : '') +
+    `<span class="dim">at</span> ${where}  <span class="dim">${(p.y + data.terrain.datum).toFixed(0)} m ASL</span>\n` +
+    (touched ? `<span class="dim">touching</span> ${touched.name ?? touched.address ?? touched.id} · ${touched.heightAboveGround.toFixed(1)} m (${touched.heightSource})\n` : '') +
     `<span class="dim">WASD move · Shift sprint · Space jump · E boost · drag to orbit · N day/night · P post-fx ${post.enabled ? 'on' : 'off'} · R respawn</span>\n` +
-    `<span class="dim">${data.source.attribution}</span>`;
+    `<span class="dim">${data.source.attribution}${data.terrain.source ? ` · ${data.terrain.source.attribution}` : ''}</span>`;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -249,7 +256,7 @@ window.addEventListener('resize', onResize);
 const timer = new THREE.Clock();
 
 applyLook(night);
-loadOsm()
+loadData()
   .then(buildCity)
   .catch((err) => {
     console.error(err);

@@ -129,6 +129,10 @@ export function createSurroundings({ scene, center = new THREE.Vector3(), radius
 
   return {
     uniforms,
+    /** Puts the skyline's base at the surrounding terrain level. */
+    setBaseHeight(y) {
+      ring.position.y = center.y + y;
+    },
     setNight(t) {
       uniforms.uNight.value = t;
       dome.visible = t > 0.001;

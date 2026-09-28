@@ -6,6 +6,7 @@ bbox `31.778,35.210 – 31.788,35.225`) built from real OpenStreetMap data.
 ```bash
 npm install
 npm run fetch-data   # one-time: downloads OSM data to public/data/jerusalem_data.json
+node scripts/fetch_elevation.js   # one-time: terrain heightmap to public/data/jerusalem_elevation.json
 npm run dev
 npm test             # node:test suite (synthetic data + the real data file when present)
 npm run build
@@ -20,6 +21,10 @@ multipolygon relations, with courtyards), `highway=*`, parks, `natural=tree` and
 neighbourhood names, and writes a compact pre-parsed JSON (flat `[lat, lon, ...]` rings).
 The app then runs fully offline. If Overpass is unreachable, save a response yourself and
 convert it with `node scripts/fetch_jerusalem.js --from raw.json`.
+
+`scripts/fetch_elevation.js` samples a 64 x 64 elevation grid over the same bbox (Open-Meteo /
+Copernicus DEM, falling back to Open-Elevation / SRTM) and smooths it. The current file is
+SRTM, 767–817 m above sea level. It is optional: without it the city is built on flat ground.
 
 **License:** map data © OpenStreetMap contributors, ODbL 1.0. The game must show the
 attribution (the HUD does). The JSON file is a derivative database: if you distribute it
@@ -60,6 +65,13 @@ before a commercial release.
   silhouette with scattered lit windows by night. A night sky dome has an orange
   light-pollution horizon and a few stars. At night the land between them fills with
   street lights (outer-ground shader).
+- `src/city/terrain.js`: `heightAt(x, z)`, bilinear over the heightmap. The datum is the
+  lowest sample, so y = 0 is 767 m above sea level. Outside the grid, heights ease to the
+  mean edge height. Buildings stand on the lowest ground under their footprint, with
+  foundations 0.6 m below it. Floors count from there and the roof line from the highest
+  ground point, so downhill sides show an extra storey. Roads, sidewalks and parks are
+  subdivided (edges ≤ 6 m) and draped over the terrain mesh (8 m grid). Collision uses the
+  same function: `groundHeight` and `raycast` follow the terrain.
 - `src/city/geo.js`: lat/lon → local meters (+X east, −Z north, origin at the bbox center).
 - `src/city/footprint.js`: polygon helpers and `decomposeFootprint()`, which turns any
   footprint (rotated, concave, with holes) into axis-aligned boxes for collision.

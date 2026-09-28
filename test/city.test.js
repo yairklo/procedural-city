@@ -8,8 +8,10 @@ import { createProjection } from '../src/city/geo.js';
 import { decomposeFootprint, orientRings, pointInRings, distanceToEdges, ringArea } from '../src/city/footprint.js';
 import { CityGenerator, resolveHeight, extrudeBuilding, findRoadsAt, DEFAULT_CITY_OPTIONS } from '../src/city/CityGenerator.js';
 import { syntheticOverpass } from './helpers/synthetic.js';
+import { createTerrain } from '../src/city/terrain.js';
 
 const REAL_DATA = fileURLToPath(new URL('../public/data/jerusalem_data.json', import.meta.url));
+const REAL_ELEVATION = fileURLToPath(new URL('../public/data/jerusalem_elevation.json', import.meta.url));
 const STEP = DEFAULT_CITY_OPTIONS.collisionStep;
 const PLAYER = { radius: 0.4, height: 1.8, step: 0.45 };
 
@@ -101,7 +103,7 @@ test('extrusion: walls face outward, roof faces up, triangle winding matches nor
   const b = data.buildings.find((x) => x.rings.length > 1) ?? data.buildings[0];
   const g = extrudeBuilding(b);
   const pos = g.getAttribute('position').array, nrm = g.getAttribute('normal').array;
-  assert.equal(g.getAttribute('aFacade').itemSize, 3);
+  assert.equal(g.getAttribute('aFacade').itemSize, 4);
   let walls = 0;
   for (let t = 0; t < pos.length; t += 9) {
     const [ax, ay, az, bx, by, bz, cx, cy, cz] = pos.slice(t, t + 9);
@@ -223,14 +225,15 @@ test('render: static geometry is merged, well under 100 draw calls', () => {
 
 test('real Jerusalem data (public/data/jerusalem_data.json)', { skip: !existsSync(REAL_DATA) && 'not fetched yet: run npm run fetch-data' }, () => {
   const osm = JSON.parse(readFileSync(REAL_DATA, 'utf8'));
+  const elevation = existsSync(REAL_ELEVATION) ? JSON.parse(readFileSync(REAL_ELEVATION, 'utf8')) : null;
   assert.equal(osm.format, 'osm-city-v1');
   assert.ok(osm.buildings.length > 300, `${osm.buildings.length} buildings`);
   assert.ok(osm.roads.length > 100, `${osm.roads.length} roads`);
-  const real = new CityGenerator({ osm }).create();
+  const real = new CityGenerator({ osm, elevation }).create();
   const s = real.data.spawn;
-  assert.equal(s.y, 0);
+  assert.ok(Math.abs(s.y - real.collision.terrainHeight(s.x, s.z)) < 1e-9, 'spawn on the ground');
   assert.ok(findRoadsAt(real.data, s.x, s.z).length > 0);
-  assert.equal(real.collision.queryAABB(s.x - 0.4, 0.01, s.z - 0.4, s.x + 0.4, 1.8, s.z + 0.4).length, 0);
+  assert.equal(real.collision.queryAABB(s.x - 0.4, s.y + 0.01, s.z - 0.4, s.x + 0.4, s.y + 1.8, s.z + 0.4).length, 0);
   let meshes = 0;
   real.group.traverse((o) => {
     if (o.isMesh) meshes++;
@@ -238,4 +241,57 @@ test('real Jerusalem data (public/data/jerusalem_data.json)', { skip: !existsSyn
   assert.ok(meshes < 100, `${meshes} meshes`);
   console.log('[real data]', real.data.stats, `${meshes} meshes`);
   real.dispose();
+});
+
+// A synthetic heightmap over the same bbox: a 40 m slope rising to the north-east plus a hill.
+function syntheticHeightmap(size = 32) {
+  const values = [];
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      const u = c / (size - 1), v = 1 - r / (size - 1); // u east, v north
+      values.push(770 + 25 * u + 15 * v + 12 * Math.exp(-((u - 0.4) ** 2 + (v - 0.6) ** 2) / 0.02));
+    }
+  }
+  return { format: 'heightmap-v1', bbox: { ...JERUSALEM_BBOX }, width: size, height: size, values };
+}
+
+test('terrain: heightmap is sampled in the right orientation, eased outside', () => {
+  const hm = syntheticHeightmap();
+  const proj = createProjection(JERUSALEM_BBOX);
+  const t = createTerrain(hm, proj);
+  assert.ok(Math.abs(t.datum - 770) < 1e-3);
+  const b = proj.bounds;
+  const sw = t.heightAt(b.minX, b.maxZ), ne = t.heightAt(b.maxX, b.minZ);
+  assert.ok(Math.abs(sw - 0) < 0.05, `south-west corner ${sw}`);
+  assert.ok(ne > 39 && ne < 41, `north-east corner ${ne}`);
+  assert.ok(Math.abs(t.heightAt(b.maxX + 5000, 0) - t.meanEdge) < 1e-6, 'far outside eases to the mean edge height');
+});
+
+test('terrain: buildings sit on the slope, spawn and ground queries follow it', () => {
+  const gen = new CityGenerator({ osm: convertOverpass(syntheticOverpass()), elevation: syntheticHeightmap() });
+  const { data: d, collision: c } = gen.create();
+  assert.equal(c.terrainHeight(0, 0), d.terrain.heightAt(0, 0));
+  for (const b of d.buildings.filter((x) => x.kind === 'building')) {
+    // Every footprint vertex is inside the building: walls start below and end above the ground there.
+    for (let i = 0; i < b.rings[0].length; i += 2) {
+      const g = d.terrain.heightAt(b.rings[0][i], b.rings[0][i + 1]);
+      assert.ok(b.base < g, `${b.id} foundation below ground`);
+      assert.ok(b.height > g + 2, `${b.id} roof above ground`);
+    }
+  }
+  for (const b of d.buildings.filter((x) => x.kind === 'canopy')) {
+    assert.ok(b.base > d.terrain.heightAt(b.centroid.x, b.centroid.z) + 2, `${b.id} canopy clear of the street`);
+  }
+  const s = d.spawn;
+  assert.ok(Math.abs(s.y - d.terrain.heightAt(s.x, s.z)) < 1e-9 && s.y > 0.5, 'spawn on sloped ground');
+  assert.equal(c.groundHeight(s.x, s.z, s.y + 0.45), s.y);
+  const res = c.resolveCapsule({ ...s }, 0.4, 1.8, 0.45);
+  assert.equal(res.collided, false);
+  // A ray straight down from the sky lands on the terrain (away from buildings).
+  const hit = c.raycast({ x: s.x, y: 300, z: s.z }, { x: 0, y: -1, z: 0 }, 1000);
+  assert.ok(hit && Math.abs(hit.point.y - s.y) < 1e-3 && hit.normal.y > 0.9, 'ray hits the terrain');
+  // Draped road surface follows the terrain.
+  const roads = d.roads.length && gen.build(d).group.getObjectByName('Roads');
+  const p = roads.geometry.getAttribute('position').array;
+  for (let i = 0; i < p.length; i += 300) assert.ok(Math.abs(p[i + 1] - d.terrain.heightAt(p[i], p[i + 2]) - 0.06) < 1e-3);
 });

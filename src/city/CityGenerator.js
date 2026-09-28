@@ -17,6 +17,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createRng, hashString } from './random.js';
 import { CityCollisionWorld } from './CityCollision.js';
 import { createProjection } from './geo.js';
+import { createTerrain, footprintGround, FLAT_TERRAIN } from './terrain.js';
 import {
   cleanRing, orientRings, footprintArea, ringsBounds, ringCentroid, pointInRings, distanceToEdges,
   discInside, segmentDistance, decomposeFootprint, orientedBox,
@@ -25,6 +26,10 @@ import {
 export const DEFAULT_CITY_OPTIONS = Object.freeze({
   /** Parsed contents of public/data/jerusalem_data.json (required). */
   osm: null,
+  /** Parsed public/data/jerusalem_elevation.json (optional; flat ground without it). */
+  elevation: null,
+  /** How far building walls continue below the lowest ground point under them (hides gaps on slopes). */
+  foundationDepth: 0.6,
   name: 'Jerusalem · City Center',
   /** Only drives decorative randomness (stone tint, rooftop layout, tree sizes). */
   seed: 'jerusalem',
@@ -220,7 +225,8 @@ export class CityGenerator {
     const styleRng = rng.fork('style');
     const propRng = rng.fork('props');
     const treeRng = rng.fork('trees');
-    const collision = new CityCollisionWorld({ cellSize: o.collisionCellSize });
+    const terrain = o.elevation ? createTerrain(o.elevation, proj) : FLAT_TERRAIN;
+    const collision = new CityCollisionWorld({ cellSize: o.collisionCellSize, groundHeightAt: terrain.flat ? null : terrain.heightAt });
 
     const projectRings = (rings) => {
       const out = [];
@@ -250,11 +256,17 @@ export class CityGenerator {
       const box = ringsBounds(rings);
       const centroid = ringCentroid(rings[0]);
       const canopy = h.kind === 'canopy';
+      // Seat the building on the terrain: floors count from the lowest ground point, the roof
+      // line from the highest (so the downhill side shows an extra, partly exposed storey,
+      // as on Jerusalem's slopes), and the walls continue below ground as a foundation.
+      const ground = footprintGround(terrain, rings, centroid);
+      const bottomY = canopy ? ground.max + h.base : ground.min - o.foundationDepth;
+      const topY = canopy ? ground.max + h.top : ground.max + h.top;
       const stone = mixHex(styleRng.pick(STONE), styleRng.pick(STONE), styleRng.next());
       const shop = tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
       const street = tags['addr:street'];
       const roof = !canopy && PITCHED_ROOFS.has(tags['roof:shape']) && area <= o.tileRoofMaxArea && h.floors <= o.tileRoofMaxFloors
-        ? hipRoof(rings[0], area, h.top, o, styleRng)
+        ? hipRoof(rings[0], area, topY, o, styleRng)
         : null;
       const building = {
         id: `OSM-${src.id}`,
@@ -264,8 +276,10 @@ export class CityGenerator {
         name: tags['name:en'] ?? tags.name ?? null,
         address: street ? `${tags['addr:housenumber'] ? `${tags['addr:housenumber']} ` : ''}${street}` : null,
         floors: h.floors,
-        base: h.base,
-        height: h.top,
+        base: bottomY, // world Y of the bottom of the walls
+        height: topY, // world Y of the roof (eaves for tile roofs)
+        groundY: ground.min,
+        heightAboveGround: topY - ground.min,
         heightSource: h.source,
         // Jerusalem roofs are overwhelmingly flat; a pitched-roof tag on a large building is
         // treated as flat (with rooftop equipment) rather than trusted.
@@ -276,13 +290,13 @@ export class CityGenerator {
         centroid,
         bounds: box,
         color: canopy ? COLORS.canopy : stone,
-        // Facade shader inputs: (random seed, window density, ground-floor shops).
-        facade: [styleRng.next(), canopy || h.floors < 1 ? 0 : SMALL_TYPES.has(tags.building) ? 0.3 : 1, canopy ? 0 : shop],
+        // Facade shader inputs: (random seed, window density, ground-floor shops, ground-floor Y).
+        facade: [styleRng.next(), canopy || h.floors < 1 ? 0 : SMALL_TYPES.has(tags.building) ? 0.3 : 1, canopy ? 0 : shop, ground.min],
         boxes: decomposeFootprint(rings, { step: o.collisionStep }),
       };
       buildings.push(building);
       for (const b of building.boxes) {
-        collision.add({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, minY: h.base, maxY: h.top, kind: 'building', ref: building.id });
+        collision.add({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, minY: bottomY, maxY: topY, kind: 'building', ref: building.id });
       }
       if (roof) {
         // Two stepped tiers approximate the roof volume, so you can stand on it but not walk through it.
@@ -362,9 +376,9 @@ export class CityGenerator {
     for (let i = 0; i + 1 < treeCoords.length; i += 2) {
       const { x, z } = proj.project(treeCoords[i], treeCoords[i + 1]);
       if (x < bounds.minX - m || x > bounds.maxX + m || z < bounds.minZ - m || z > bounds.maxZ + m) continue;
-      if (collision.queryPoint(x, 1, z).some((b) => b.kind === 'building')) continue;
+      if (collision.queryPoint(x, terrain.heightAt(x, z) + 1, z).some((b) => b.kind === 'building')) continue;
       const tree = {
-        x, z, y: 0,
+        x, z, y: terrain.heightAt(x, z),
         trunkHeight: treeRng.range(2.2, 3.6),
         trunkRadius: treeRng.range(0.16, 0.26),
         crownRadius: treeRng.range(1.8, 3.2),
@@ -373,7 +387,7 @@ export class CityGenerator {
       trees.push(tree);
       collision.add({
         minX: x - tree.trunkRadius, maxX: x + tree.trunkRadius, minZ: z - tree.trunkRadius, maxZ: z + tree.trunkRadius,
-        minY: 0, maxY: tree.trunkHeight + tree.crownRadius, kind: 'tree', ref: null,
+        minY: tree.y, maxY: tree.y + tree.trunkHeight + tree.crownRadius, kind: 'tree', ref: null,
       });
     }
 
@@ -385,6 +399,7 @@ export class CityGenerator {
       source: { attribution: osm.attribution, license: osm.license, fetchedAt: osm.fetchedAt, bbox: osm.bbox },
       options: { ...o, osm: undefined },
       projection: proj,
+      terrain,
       bounds,
       buildings,
       buildingById: new Map(buildings.map((b) => [b.id, b])),
@@ -401,7 +416,8 @@ export class CityGenerator {
         buildingsWithOsmHeight: heightFromOsm,
         canopies: buildings.filter((b) => b.kind === 'canopy').length,
         tileRoofs: buildings.filter((b) => b.roof).length,
-        tallest: buildings.reduce((mx, b) => Math.max(mx, b.height), 0),
+        tallest: buildings.reduce((mx, b) => Math.max(mx, b.heightAboveGround), 0),
+        terrain: terrain.flat ? 'flat' : `${terrain.datum.toFixed(0)}–${(terrain.datum + terrain.maxHeight).toFixed(0)} m ASL`,
         roads: roads.length,
         parks: parks.length,
         trees: trees.length,
@@ -446,31 +462,44 @@ export class CityGenerator {
     const width = bounds.maxX - bounds.minX + margin * 2, depth = bounds.maxZ - bounds.minZ + margin * 2;
     const cx = (bounds.minX + bounds.maxX) / 2, cz = (bounds.minZ + bounds.maxZ) / 2;
 
-    // Ground: stone-slab sidewalks under the whole data area, dry land beyond it.
-    const ground = add(new THREE.Mesh(
-      track(new THREE.PlaneGeometry(width, depth).rotateX(-Math.PI / 2).translate(cx, 0, cz)),
-      track(createSurfaceMaterial('paving', COLORS.ground, { roughness: 0.9, uniforms })),
+    // Ground: one terrain mesh. Stone-slab sidewalks over the data area (+ margin), dry land
+    // with the rest of the city's lights beyond it (two material groups, two draw calls). It
+    // extends past the heightmap far enough for the terrain to ease back to its mean edge
+    // height, where a large flat plane takes over to the horizon.
+    const { terrain } = data;
+    const inner = { minX: bounds.minX - margin, maxX: bounds.maxX + margin, minZ: bounds.minZ - margin, maxZ: bounds.maxZ + margin };
+    const reach = terrain.flat ? 200 : 700;
+    const terrainMesh = add(new THREE.Mesh(
+      track(terrainGeometry(terrain, {
+        minX: inner.minX - reach, maxX: inner.maxX + reach, minZ: inner.minZ - reach, maxZ: inner.maxZ + reach,
+      }, inner, terrain.flat ? 50 : 8)),
+      [
+        track(createSurfaceMaterial('paving', COLORS.ground, { roughness: 0.9, uniforms })),
+        track(createOuterGroundMaterial(uniforms, bounds)),
+      ],
     ));
-    ground.name = 'Ground';
-    ground.receiveShadow = true;
+    terrainMesh.name = 'Terrain';
+    terrainMesh.receiveShadow = true;
     const outer = add(new THREE.Mesh(
-      track(new THREE.PlaneGeometry(width + 6000, depth + 6000).rotateX(-Math.PI / 2).translate(cx, -0.4, cz)),
+      track(new THREE.PlaneGeometry(width + 8000, depth + 8000).rotateX(-Math.PI / 2).translate(cx, terrain.meanEdge - 0.4, cz)),
       track(createOuterGroundMaterial(uniforms, bounds)),
     ));
     outer.name = 'OuterGround';
     outer.receiveShadow = true;
 
-    // Flat ground layers, coplanar with the ground and ordered with polygon offset:
-    // parks < pedestrian paving < curb stones < asphalt < lane markings.
-    const layer = (name, geometries, material) => {
+    // Flat ground layers, draped over the terrain (subdivided so they follow it) and ordered
+    // with a small lift plus polygon offset: parks < paving < curb stones < asphalt < markings.
+    const layer = (name, geometries, material, lift) => {
       if (!geometries.length) return;
-      const geo = track(mergeGeometries(geometries, false));
+      const merged = mergeGeometries(geometries, false);
       for (const g of geometries) g.dispose();
+      const geo = track(drapeGeometry(merged, terrain, lift, 6));
+      merged.dispose();
       const mesh = add(new THREE.Mesh(geo, track(material)));
       mesh.name = name;
       mesh.receiveShadow = true;
     };
-    layer('Parks', data.parks.map((p) => flatPolygonGeometry(p.rings, 0)), createSurfaceMaterial('grass', COLORS.park, { offset: -3 }));
+    layer('Parks', data.parks.map((p) => flatPolygonGeometry(p.rings, 0)), createSurfaceMaterial('grass', COLORS.park, { offset: -3 }), 0.02);
     const geos = { asphalt: [], paving: [], curb: [], marking: [] };
     for (const r of data.roads) {
       geos[r.surface].push(r.rings ? flatPolygonGeometry(r.rings, 0) : ribbonGeometry(r.points, r.width / 2, 0));
@@ -479,10 +508,10 @@ export class CityGenerator {
       geos.curb.push(ribbonGeometry(r.points, r.width / 2 + CURB_WIDTH, 0));
       if (r.width >= 8) geos.marking.push(dashedLineGeometry(r.points, 0.07, 3, 4));
     }
-    layer('Paving', geos.paving, createSurfaceMaterial('paving', COLORS.paving, { offset: -7, uniforms }));
-    layer('Curbs', geos.curb, createSurfaceMaterial('curb', COLORS.curb, { roughness: 0.85, offset: -11, uniforms }));
-    layer('Roads', geos.asphalt, createSurfaceMaterial('asphalt', COLORS.asphalt, { roughness: 0.93, offset: -15, uniforms }));
-    layer('Markings', geos.marking, createSurfaceMaterial('marking', COLORS.marking, { roughness: 0.7, offset: -19, uniforms }));
+    layer('Paving', geos.paving, createSurfaceMaterial('paving', COLORS.paving, { offset: -7, uniforms }), 0.04);
+    layer('Curbs', geos.curb, createSurfaceMaterial('curb', COLORS.curb, { roughness: 0.85, offset: -11, uniforms }), 0.05);
+    layer('Roads', geos.asphalt, createSurfaceMaterial('asphalt', COLORS.asphalt, { roughness: 0.93, offset: -15, uniforms }), 0.06);
+    layer('Markings', geos.marking, createSurfaceMaterial('marking', COLORS.marking, { roughness: 0.7, offset: -19, uniforms }), 0.08);
 
     // Buildings: real footprints extruded, merged per chunk with BufferGeometryUtils.
     const chunks = new Map();
@@ -682,9 +711,11 @@ function hipRoof(ring, area, eaveY, o, rng) {
 function findSpawn(data) {
   const { collision, bounds } = data;
   const CLEAR = 0.8;
-  const free = (x, z) =>
-    x > bounds.minX + 5 && x < bounds.maxX - 5 && z > bounds.minZ + 5 && z < bounds.maxZ - 5 &&
-    collision.queryAABB(x - CLEAR, 0.01, z - CLEAR, x + CLEAR, 2.2, z + CLEAR).length === 0;
+  const free = (x, z) => {
+    if (!(x > bounds.minX + 5 && x < bounds.maxX - 5 && z > bounds.minZ + 5 && z < bounds.maxZ - 5)) return false;
+    const y = collision.terrainHeight(x, z);
+    return collision.queryAABB(x - CLEAR, y + 0.01, z - CLEAR, x + CLEAR, y + 2.2, z + CLEAR).length === 0;
+  };
 
   const samples = [];
   for (const r of data.roads) {
@@ -702,13 +733,13 @@ function findSpawn(data) {
   }
   samples.sort((a, b) => a.score - b.score);
   for (const s of samples) {
-    if (free(s.x, s.z)) return { x: s.x, y: 0, z: s.z, heading: s.dir, roadId: s.road.id };
+    if (free(s.x, s.z)) return { x: s.x, y: collision.terrainHeight(s.x, s.z), z: s.z, heading: s.dir, roadId: s.road.id };
   }
   // No usable street: spiral out from the center.
   for (let r = 0; r < 800; r += 2) {
     for (let a = 0; a < Math.PI * 2; a += 0.3) {
       const x = Math.cos(a) * r, z = Math.sin(a) * r;
-      if (free(x, z)) return { x, y: 0, z, heading: 0, roadId: null };
+      if (free(x, z)) return { x, y: collision.terrainHeight(x, z), z, heading: 0, roadId: null };
     }
   }
   return { x: 0, y: collision.groundHeight(0, 0), z: 0, heading: 0, roadId: null };
@@ -800,7 +831,7 @@ class TriangleSink {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
     if (this.extra) {
       g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
-      g.setAttribute('aFacade', new THREE.Float32BufferAttribute(this.fac, 3));
+      g.setAttribute('aFacade', new THREE.Float32BufferAttribute(this.fac, 4));
     }
     return g;
   }
@@ -856,6 +887,102 @@ function ribbonGeometry(points, hw, y) {
 
 const CURB_WIDTH = 0.3;
 
+/**
+ * Regular grid over `rect` following the terrain, with smooth normals. Triangles whose
+ * cell center lies inside `inner` form group 0, the rest group 1.
+ */
+function terrainGeometry(terrain, rect, inner, spacing) {
+  const nx = Math.max(1, Math.round((rect.maxX - rect.minX) / spacing));
+  const nz = Math.max(1, Math.round((rect.maxZ - rect.minZ) / spacing));
+  const sx = (rect.maxX - rect.minX) / nx, sz = (rect.maxZ - rect.minZ) / nz;
+  const pos = new Float32Array((nx + 1) * (nz + 1) * 3);
+  const nrm = new Float32Array(pos.length);
+  for (let j = 0, k = 0; j <= nz; j++) {
+    for (let i = 0; i <= nx; i++, k += 3) {
+      const x = rect.minX + i * sx, z = rect.minZ + j * sz;
+      pos[k] = x;
+      pos[k + 1] = terrain.heightAt(x, z);
+      pos[k + 2] = z;
+      const n = terrainNormal(terrain, x, z);
+      nrm[k] = n[0]; nrm[k + 1] = n[1]; nrm[k + 2] = n[2];
+    }
+  }
+  const innerIdx = [], outerIdx = [];
+  for (let j = 0; j < nz; j++) {
+    for (let i = 0; i < nx; i++) {
+      const a = j * (nx + 1) + i, b = a + 1, c = a + nx + 1, d = c + 1;
+      const cx = rect.minX + (i + 0.5) * sx, cz = rect.minZ + (j + 0.5) * sz;
+      const list = cx > inner.minX && cx < inner.maxX && cz > inner.minZ && cz < inner.maxZ ? innerIdx : outerIdx;
+      list.push(a, c, b, b, c, d); // counter-clockwise seen from above
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  g.setIndex([...innerIdx, ...outerIdx]);
+  g.addGroup(0, innerIdx.length, 0);
+  g.addGroup(innerIdx.length, outerIdx.length, 1);
+  g.computeBoundingSphere();
+  return g;
+}
+
+function terrainNormal(terrain, x, z, e = 1) {
+  const nx = terrain.heightAt(x - e, z) - terrain.heightAt(x + e, z);
+  const nz = terrain.heightAt(x, z - e) - terrain.heightAt(x, z + e);
+  const l = Math.hypot(nx, 2 * e, nz);
+  return [nx / l, (2 * e) / l, nz / l];
+}
+
+/**
+ * Lays a flat (y = 0, non-indexed) geometry onto the terrain: splits triangles until no edge
+ * is longer than `maxEdge`, then sets every vertex to terrain height + `lift` with the
+ * terrain's normal.
+ */
+function drapeGeometry(geometry, terrain, lift, maxEdge) {
+  const src = geometry.getAttribute('position').array;
+  const out = [];
+  const max2 = maxEdge * maxEdge;
+  const split = (ax, az, bx, bz, cx, cz, depth) => {
+    const ab = (ax - bx) ** 2 + (az - bz) ** 2, bc = (bx - cx) ** 2 + (bz - cz) ** 2, ca = (cx - ax) ** 2 + (cz - az) ** 2;
+    const m = Math.max(ab, bc, ca);
+    if (terrain.flat || m <= max2 || depth > 12) {
+      out.push(ax, az, bx, bz, cx, cz);
+      return;
+    }
+    // Bisect the longest edge (keeps winding).
+    if (m === ab) {
+      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+      split(ax, az, mx, mz, cx, cz, depth + 1);
+      split(mx, mz, bx, bz, cx, cz, depth + 1);
+    } else if (m === bc) {
+      const mx = (bx + cx) / 2, mz = (bz + cz) / 2;
+      split(ax, az, bx, bz, mx, mz, depth + 1);
+      split(ax, az, mx, mz, cx, cz, depth + 1);
+    } else {
+      const mx = (cx + ax) / 2, mz = (cz + az) / 2;
+      split(ax, az, bx, bz, mx, mz, depth + 1);
+      split(mx, mz, bx, bz, cx, cz, depth + 1);
+    }
+  };
+  for (let i = 0; i < src.length; i += 9) split(src[i], src[i + 2], src[i + 3], src[i + 5], src[i + 6], src[i + 8], 0);
+
+  const n = out.length / 2;
+  const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3);
+  for (let v = 0; v < n; v++) {
+    const x = out[v * 2], z = out[v * 2 + 1];
+    pos[v * 3] = x;
+    pos[v * 3 + 1] = terrain.heightAt(x, z) + lift;
+    pos[v * 3 + 2] = z;
+    const t = terrain.flat ? [0, 1, 0] : terrainNormal(terrain, x, z);
+    nrm[v * 3] = t[0]; nrm[v * 3 + 1] = t[1]; nrm[v * 3 + 2] = t[2];
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  g.computeBoundingSphere();
+  return g;
+}
+
 /** Thin dashes centered on a polyline (lane markings). */
 function dashedLineGeometry(points, hw, dash, gap) {
   const sink = new TriangleSink();
@@ -901,13 +1028,13 @@ export function extrudeBuilding(b) {
   } else {
     capTriangles(b.rings, y1, UP, sink);
   }
-  if (y0 > 0.01) capTriangles(b.rings, y0, DOWN, sink);
+  if (b.kind === 'canopy') capTriangles(b.rings, y0, DOWN, sink);
   return sink.geometry();
 }
 
 function addHipRoof(roof, sink) {
   _lin.setHex(roof.color);
-  sink.extra = { color: [_lin.r, _lin.g, _lin.b], facade: [sink.extra.facade[0], 0, 0] };
+  sink.extra = { color: [_lin.r, _lin.g, _lin.b], facade: [sink.extra.facade[0], 0, 0, sink.extra.facade[3]] };
   const y0 = roof.eaveY, y1 = roof.eaveY + roof.rise;
   const [e0, e1, e2, e3] = roof.eaves.map(([x, z]) => [x, y0, z]);
   const [r0, r1] = roof.ridgeEnds.map(([x, z]) => [x, y1, z]);
@@ -987,10 +1114,10 @@ function createStoneMaterial(uniforms, floorHeight) {
       .replace(
         '#include <common>',
         /* glsl */ `#include <common>
-attribute vec3 aFacade;
+attribute vec4 aFacade;
 varying vec3 vCityWorldPos;
 varying vec3 vCityWorldNormal;
-varying vec3 vCityFacade;`,
+varying vec4 vCityFacade;`,
       )
       .replace(
         '#include <begin_vertex>',
@@ -1008,7 +1135,7 @@ uniform float uNight;
 uniform float uFloorHeight;
 varying vec3 vCityWorldPos;
 varying vec3 vCityWorldNormal;
-varying vec3 vCityFacade;
+varying vec4 vCityFacade;
 ${GLSL_COMMON}
 ${GLSL_BEVEL}`,
       )
@@ -1060,7 +1187,7 @@ vec3 cityT = vec3(1.0, 0.0, 0.0);
     vec2 t2 = normalize(vec2(-n.z, n.x));
     cityT = vec3(t2.x, 0.0, t2.y);
     float u = dot(P.xz, t2);
-    float y = P.y;
+    float y = P.y - vCityFacade.w; // height above this building's ground floor
 
     // --- Ashlar masonry ---
     float cy = y / 0.36;

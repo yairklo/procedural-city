@@ -24,9 +24,13 @@ const clamp = (v, min, max) => (v < min ? min : v > max ? max : v);
  */
 
 export class CityCollisionWorld {
-  /** @param {{ cellSize?: number }} [options] */
-  constructor({ cellSize = 32 } = {}) {
+  /**
+   * @param {{ cellSize?: number, groundHeightAt?: ((x:number, z:number) => number) | null }} [options]
+   *   groundHeightAt: terrain height function. Without it the ground is the plane y = 0.
+   */
+  constructor({ cellSize = 32, groundHeightAt = null } = {}) {
     this.cellSize = cellSize;
+    this.groundHeightAt = groundHeightAt;
     /** @type {CollisionBox[]} */
     this.boxes = [];
     /** @type {Map<number, number[]>} */
@@ -107,12 +111,18 @@ export class CityCollisionWorld {
     return this.queryAABB(x, y, z, x, y, z, out);
   }
 
+  /** Terrain height at (x, z) (0 when there is no terrain). */
+  terrainHeight(x, z) {
+    return this.groundHeightAt ? this.groundHeightAt(x, z) : 0;
+  }
+
   /**
-   * Height of the highest box top under (x, z) that is at or below `maxY`.
+   * Height of the highest box top under (x, z) that is at or below `maxY`, or the terrain
+   * (`baseHeight`, default: terrainHeight) when that is higher.
    * Pass the character's feet height + step height as `maxY` so it can step onto
    * curbs but not "teleport" onto a roof above it.
    */
-  groundHeight(x, z, maxY = Infinity, baseHeight = 0) {
+  groundHeight(x, z, maxY = Infinity, baseHeight = this.terrainHeight(x, z)) {
     let best = baseHeight;
     const cs = this.cellSize;
     const cell = this.cells.get(CityCollisionWorld.cellKey(Math.floor(x / cs), Math.floor(z / cs)));
@@ -189,7 +199,8 @@ export class CityCollisionWorld {
   }
 
   /**
-   * Casts a ray against all boxes (and optionally the y = groundY plane).
+   * Casts a ray against all boxes and optionally the ground: the terrain when the world has
+   * one (marched in steps, then refined by bisection), else the plane y = groundY.
    * Walks the grid cells along the ray with a 2D DDA, stopping as soon as a hit
    * is closer than the next cell boundary.
    * @returns {{distance:number, point:{x:number,y:number,z:number}, normal:{x:number,y:number,z:number}, box:CollisionBox|null} | null}
@@ -251,7 +262,10 @@ export class CityCollisionWorld {
       else { normal.x = -dx; normal.y = -dy; normal.z = -dz; } // origin inside the box
     }
 
-    if (includeGround && dy < -EPS) {
+    if (includeGround && this.groundHeightAt) {
+      const g = this._rayTerrain(ox, oy, oz, dx, dy, dz, bestT);
+      if (g) return g;
+    } else if (includeGround && dy < -EPS) {
       const tg = (groundY - oy) / dy;
       if (tg >= 0 && tg < bestT) {
         bestT = tg;
@@ -263,6 +277,37 @@ export class CityCollisionWorld {
 
     if (!bestBox) return null;
     return { distance: bestT, point: { x: ox + dx * bestT, y: oy + dy * bestT, z: oz + dz * bestT }, normal, box: bestBox };
+  }
+
+  /** First crossing of the ray below the terrain before tMax, or null. */
+  _rayTerrain(ox, oy, oz, dx, dy, dz, tMax) {
+    const h = this.groundHeightAt;
+    const above = (t) => oy + dy * t - h(ox + dx * t, oz + dz * t);
+    if (above(0) <= 0) {
+      return { distance: 0, point: { x: ox, y: h(ox, oz), z: oz }, normal: this._terrainNormal(ox, oz), box: null };
+    }
+    const step = 2; // meters; the terrain is smooth at this scale
+    let t0 = 0;
+    for (let t1 = step; t0 < tMax; t0 = t1, t1 += step) {
+      const t = Math.min(t1, tMax);
+      if (above(t) > 0) continue;
+      let a = t0, b = t;
+      for (let i = 0; i < 24; i++) {
+        const m = (a + b) / 2;
+        if (above(m) > 0) a = m;
+        else b = m;
+      }
+      const x = ox + dx * b, z = oz + dz * b;
+      return { distance: b, point: { x, y: h(x, z), z }, normal: this._terrainNormal(x, z), box: null };
+    }
+    return null;
+  }
+
+  _terrainNormal(x, z, e = 0.5) {
+    const h = this.groundHeightAt;
+    const nx = h(x - e, z) - h(x + e, z), nz = h(x, z - e) - h(x, z + e), ny = 2 * e;
+    const l = Math.hypot(nx, ny, nz);
+    return { x: nx / l, y: ny / l, z: nz / l };
   }
 
   stats() {
