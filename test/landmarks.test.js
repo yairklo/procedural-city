@@ -194,3 +194,55 @@ test('landmarks: buildings along the Temple Mount walls do not tower over the es
   const museum = chunk.buildings.find((b) => b.osmId === 'w291836691');
   if (museum) assert.ok(museum.height - esplanade.y < 12, `museum ${(museum.height - esplanade.y).toFixed(1)} m above the esplanade`);
 });
+
+test('landmarks: the Knesset, the Chords Bridge (walkable end to end), the Mount of Olives cemetery', () => {
+  const collision = new CityCollisionWorld({ cellSize: 32, groundHeightAt: terrain.heightAt });
+  const lm = buildLandmarks(landmarks, { projection, terrain, collision, uniforms: { uNight: { value: 0 } } });
+  const st = lm.stats;
+  assert.ok(st.modern.knesset && st.modern.knessetPiers >= 40, `Knesset colonnade (${st.modern.knessetPiers} piers)`);
+  assert.ok(landmarks.replaces.includes(landmarks.modern.knesset.id), 'the generic Knesset block is replaced');
+  assert.equal(st.modern.cables, 66);
+
+  // Walk the bridge deck along its centre line: no step over 0.45 m, always on the deck.
+  const line = projection.projectFlat(landmarks.modern.chordsBridge.deck);
+  let y = null, maxStep = 0, samples = 0;
+  for (let i = 0; i + 3 < line.length; i += 2) {
+    const ax = line[i], az = line[i + 1], bx = line[i + 2], bz = line[i + 3];
+    const n = Math.ceil(Math.hypot(bx - ax, bz - az) / 0.5);
+    for (let k = 0; k < n; k++) {
+      const x = ax + ((bx - ax) * k) / n, z = az + ((bz - az) * k) / n;
+      const g = collision.groundHeight(x, z, (y ?? terrain.heightAt(x, z)) + 0.45);
+      if (y !== null) maxStep = Math.max(maxStep, Math.abs(g - y));
+      y = g;
+      samples++;
+    }
+  }
+  assert.ok(samples > 500 && maxStep <= 0.45, `deck walkable (largest step ${maxStep.toFixed(2)} m)`);
+
+  // The pylon: ~118 m long, leaning 24 degrees, so its top is ~108 m up.
+  const p = projection.project(landmarks.modern.chordsBridge.pylon.lat, landmarks.modern.chordsBridge.pylon.lon);
+  const pylonTop = collision.boxes.filter((b) => b && b.ref === 'chords-pylon').reduce((mx, b) => Math.max(mx, b.maxY), -Infinity);
+  const rise = pylonTop - terrain.heightAt(p.x, p.z);
+  assert.ok(rise > 100 && rise < 112, `pylon rises ${rise.toFixed(0)} m`);
+
+  // Cemetery: thousands of graves, none inside the mapped buildings on the slope.
+  assert.ok(st.hills.graves > 15000, `${st.hills.graves} graves`);
+  const cem = lm.group.getObjectByName('Landmark(OliveCemetery)');
+  const exclude = landmarks.olives.cemetery.exclude.map((r) => projection.projectFlat(r));
+  const mtx = new THREE.Matrix4(), pos = new THREE.Vector3();
+  for (let i = 0; i < cem.count; i += 7) {
+    cem.getMatrixAt(i, mtx);
+    pos.setFromMatrixPosition(mtx);
+    assert.ok(!exclude.some((r) => pointInRings([r], pos.x, pos.z)), 'no grave inside a building');
+  }
+  lm.dispose();
+});
+
+test('terrain: the DEM reaches Mount Scopus and the Chords Bridge (real hills beyond the tiles)', () => {
+  const at = (lat, lon) => { const q = projection.project(lat, lon); return ASL(terrain.heightAt(q.x, q.z)); };
+  assert.ok(at(31.7929, 35.2432) > 815, `Mount Scopus ${at(31.7929, 35.2432).toFixed(0)} m`);
+  assert.ok(at(31.7784, 35.2446) > 795, `Mount of Olives ${at(31.7784, 35.2446).toFixed(0)} m`);
+  // The junction under the Chords Bridge is a road cut (terrain patch), not the SRTM hump.
+  const c = projection.project(31.7887, 35.2027);
+  assert.ok(Math.abs(ASL(terrain.heightAt(c.x, c.z)) - 813) < 1);
+});

@@ -122,14 +122,19 @@ export class Mesher {
     }
   }
 
-  /** Pyramid over a ring from y to an apex at the centroid, height h. */
+  /** Pyramid over a ring from y to an apex at the centroid, height h (faces out and up, whatever the ring's winding). */
   pyramid(ring, y, h) {
     const c = ringCenter(ring);
     const apex = [c.x, y + h, c.z];
     const n = ring.length / 2;
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
-      this.tri([ring[i * 2], y, ring[i * 2 + 1]], [ring[j * 2], y, ring[j * 2 + 1]], apex, null);
+      const a = [ring[i * 2], y, ring[i * 2 + 1]], b = [ring[j * 2], y, ring[j * 2 + 1]];
+      const ux = b[0] - a[0], uz = b[2] - a[2], vx = apex[0] - a[0], vy = apex[1] - a[1], vz = apex[2] - a[2];
+      let nrm = [-uz * vy, uz * vx - ux * vz, ux * vy];
+      if (nrm[1] < 0) nrm = nrm.map((v) => -v);
+      const l = Math.hypot(...nrm) || 1;
+      this.tri(a, b, apex, nrm.map((v) => v / l));
     }
   }
 

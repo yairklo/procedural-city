@@ -117,6 +117,20 @@ async function init(debug) {
       land('al-Aqsa', facing({ x: c.x - 10, z: c.z - 95 }, c));
     }
     if (lm.citadel) land('Tower of David', away(centroid(lm.citadel.outer[0]), 45));
+    // Beyond the Old City: the Knesset, the Chords Bridge, the Mount of Olives, Mount Scopus.
+    const pt = (p) => proj.project(p.lat, p.lon);
+    if (lm.modern?.knesset) {
+      const c = centroid(lm.modern.knesset.ring);
+      const m = lm.modern.menorah ? pt(lm.modern.menorah) : { x: c.x + 60, z: c.z + 60 };
+      const dx = m.x - c.x, dz = m.z - c.z, l = Math.hypot(dx, dz) || 1;
+      land('Knesset', facing({ x: m.x + (dx / l) * 25, z: m.z + (dz / l) * 25 }, c));
+    }
+    if (lm.modern?.chordsBridge) {
+      const d = lm.modern.chordsBridge.deck;
+      land('Chords Bridge', facing(pt({ lat: d[0], lon: d[1] }), pt(lm.modern.chordsBridge.pylon)));
+    }
+    if (lm.olives?.sevenArches) land('Mount of Olives lookout', facing(pt({ lat: lm.olives.sevenArches.lat, lon: lm.olives.sevenArches.lon - 0.0004 }), proj.project(31.77805, 35.2354)));
+    if (lm.scopus?.universityTower) land('Mount Scopus', away(pt(lm.scopus.universityTower), 40));
     if (lm.sepulchre) land('Holy Sepulchre', away(centroid(lm.sepulchre.ring), 40));
     for (const g of lm.gates) land(g.name, away(proj.project(g.lat, g.lon), 28));
   } catch (err) {
