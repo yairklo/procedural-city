@@ -455,7 +455,7 @@ export class CityGenerator {
     ground.receiveShadow = true;
     const outer = add(new THREE.Mesh(
       track(new THREE.PlaneGeometry(width + 6000, depth + 6000).rotateX(-Math.PI / 2).translate(cx, -0.4, cz)),
-      track(new THREE.MeshStandardMaterial({ color: COLORS.outerGround, roughness: 1 })),
+      track(createOuterGroundMaterial(uniforms, bounds)),
     ));
     outer.name = 'OuterGround';
     outer.receiveShadow = true;
@@ -1193,6 +1193,45 @@ metalnessFactor = max(metalnessFactor, cityMetal);`,
   vec3 warm = mix(vec3(1.0, 0.64, 0.32), vec3(0.85, 0.9, 1.0), step(0.9, tint));
   totalEmissiveRadiance += cityLit * uNight * warm * mix(0.8, 1.4, tint);
   totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.55, 0.22) * cityWash * uNight * 0.55;
+}`,
+      );
+  };
+  return mat;
+}
+
+/**
+ * Land around the modelled area. At night it fills with the rest of the city's street
+ * lights (jittered lamps every ~30 m with orange pools), so the edge doesn't end in darkness.
+ */
+function createOuterGroundMaterial(uniforms, bounds) {
+  const mat = new THREE.MeshStandardMaterial({ color: COLORS.outerGround, roughness: 1 });
+  mat.customProgramCacheKey = () => 'city-outer-ground';
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uNight = uniforms.uNight;
+    shader.uniforms.uArea = { value: new THREE.Vector4(bounds.minX, bounds.minZ, bounds.maxX, bounds.maxZ) };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vOuterPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vOuterPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying vec3 vOuterPos;\nuniform float uNight;\nuniform vec4 uArea;\n${GLSL_COMMON}`)
+      .replace(
+        '#include <emissivemap_fragment>',
+        /* glsl */ `#include <emissivemap_fragment>
+{
+  vec2 p = vOuterPos.xz;
+  vec2 out2 = max(max(uArea.xy - p, p - uArea.zw), 0.0);
+  float outside = smoothstep(20.0, 120.0, length(out2));
+  vec2 cell = floor(p / 30.0);
+  vec2 lamp = (cell + 0.2 + 0.6 * vec2(cityHash(vec3(cell, 1.0)), cityHash(vec3(cell, 2.0)))) * 30.0;
+  float on = step(0.3, cityHash(vec3(cell, 3.0)));
+  float d = length(p - lamp);
+  float aa = length(fwidth(p));
+  float bulb = 1.0 - smoothstep(0.5, 0.5 + aa * 1.5, d);
+  float pool = exp(-d * d / 90.0);
+  float near = bulb * 4.0 + pool * 0.6;
+  float glow = mix(near * on, 0.15, smoothstep(1.0, 6.0, aa)); // far away: average glow
+  float district = 0.6 + 0.4 * cityNoise(p / 400.0);
+  totalEmissiveRadiance += vec3(1.0, 0.55, 0.22) * uNight * outside * district * (glow * 0.35 + 0.02);
 }`,
       );
   };
