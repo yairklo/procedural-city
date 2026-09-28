@@ -16,7 +16,55 @@ npm run build
 Controls: WASD move (camera-relative) · Shift run · Space jump (hold for higher) · jump
 toward a ledge to mantle onto it · **hold Space in the air to glide** (W dive, S climb, A/D
 or mouse to steer) · click for mouse look (or drag), wheel zoom · E debug super-jump ·
-N day/night · P post-processing on/off · R respawn · H hide the controls line.
+N day/night · C free camera (WASD fly, Q/E down/up, Shift fast, wheel speed) · M mute the
+wind · B hide the stats panel · P post-processing on/off · R respawn · H hide the controls line.
+
+## Living city (Phase 4)
+
+Everything is batched into a few `InstancedMesh`es (one per kind, not one per agent), so
+the street life costs about ten draw calls per pass.
+
+- `src/city/RoadNetwork.js`: a navigation graph built from the roads of the near and medium
+  cells. Vertices at the same spot (OSM junctions, tile cuts) are merged, so agents cross
+  junctions and tile borders. `main.js` rebuilds it when cells change level (at most twice
+  a second). Agents keep their place: `match(edge)` finds the same road segment in the
+  new graph.
+- `src/city/PedestrianSystem.js`: up to 220 walkers on the sidewalks around the camera. They
+  are spawned and simulated within 80 m, and instances beyond 80 m are culled.
+  - Looks: one instanced low-poly body with ±12% scale and per-instance clothing colours.
+    The legs and arms swing in the vertex shader, each instance with its own phase.
+  - Groups: about 60% walk in groups, either pairs side by side or a leader with trailing
+    followers. Followers replay the leader's breadcrumb trail 0.5 s behind it (per place
+    in the line). In narrow streets or turns faster than 30°/s, pairs close up into
+    single file (lateral "accordion").
+  - Flee: a hard landing, or the player gliding or falling fast within 4 m of the street,
+    scatters everyone within 4 m. They run at double speed away from the impact with a
+    random spread, calm down after 3 s and walk back to the sidewalk.
+- `src/city/TrafficSystem.js`: cars and vans on asphalt roads.
+  - Driving: right-hand lanes, one-way streets obeyed at junctions, headway to the car in
+    front, slowing for junctions, and stopping for the player standing in the lane.
+  - Lights: additive headlight cones and ground light pools, and red tail lights.
+  - Light rail: an articulated five-module tram on Jaffa Road. It follows the longest
+    chained Jaffa polyline and accelerates and brakes smoothly for junctions (4 m/s),
+    stations (every ~350 m, 10 s dwell) and the termini, where it reverses. It also stops
+    for the player on the track. The modules are solid (collision group `tram`).
+- `src/city/StreetProps.js`: black iron lanterns along the streets (their warm pools light
+  the paving at night), stone benches, bollards at pedestrian malls, cypresses and olive
+  trees, instanced per cell, with collision boxes.
+- Day / night (N): a low golden-hour sun by day. By night there is a sky with stars,
+  randomly lit amber windows, lamp and headlight pools on the ground, and glowing
+  headlights on cars and the tram.
+- Traversal feedback: the FOV widens from 60° to 75° with speed in glides and fast falls,
+  and wind streaks stream past on high-speed descents. `src/audio/WindAudio.js` is
+  procedural Web Audio: looped white noise through a band-pass "rush" and a narrower
+  "whistle" band, with a slow gust LFO, mixed and pitched by speed. It needs no audio
+  files and starts on the first key press or click.
+- `src/ui/BenchmarkHUD.js` (top right): FPS, frame time (average and worst of the last
+  0.25 s), draw calls and triangles (all passes), plus active buildings, vehicles and
+  pedestrians, and the key legend. With street life running, the real data measures about
+  310–330 draw calls per frame at street level, day or night.
+- `src/player/FreeCamera.js` (C): fly anywhere. The player waits, and the world streams in
+  around the camera.
 
 ## Player: traversal and tallit gliding
 
@@ -43,11 +91,12 @@ the gameplay:
 - `src/player/PlayerCamera.js`: third-person orbit with pointer lock or drag and zoom. It
   drifts behind the character when the mouse is idle (faster while gliding). For
   occlusion it casts a ray against the collision world and the terrain: it pulls in fast
-  and eases out slowly. It pulls back and widens the FOV (+14°) with glide speed.
+  and eases out slowly. It pulls back in glides and widens the FOV from 60° to 75° with
+  speed in glides and fast falls.
 - `src/player/PlayerProxy.js`: the stand-in, a capsule with a nose plus a striped tallit
   that hangs behind on the ground and spreads like wings in a glide, fluttering with speed.
   A rigged model replaces it by providing `object3D` and `update(snapshot, dt)`.
-- `src/player/GlideEffects.js`: wind streaks that stream past during fast glides.
+- `src/player/GlideEffects.js`: wind streaks that stream past during fast glides and falls.
 
 ## Performance
 
@@ -146,7 +195,7 @@ before a commercial release.
 - Ground: stone-slab sidewalks, worn asphalt with gray (`#808080`) curb stones and dashed
   center lines on wider roads, dry-grass parks. All procedural shaders, merged per layer.
 - `src/render/lighting.js`: physical sky (also the image-based ambient light), a
-  late-afternoon sun (45° elevation, west-south-west, `#FFF3E0`) with 4 cascaded shadow maps
+  golden-hour sun (32° elevation, west-south-west, `#FFDDB0`) with 4 cascaded shadow maps
   (CSM, 2048² each, out to 700 m), and a hemisphere fill (`#87CEEB` sky / `#D2B48C` ground).
 - `src/render/postprocessing.js`: 4x MSAA HDR render → GTAO (ambient occlusion, 2.2 m radius,
   for contact shadows in streets and alleys) → bloom (highlights only) → warm color grade →
@@ -173,8 +222,9 @@ before a commercial release.
   building blocks live in `CityGenerator.js`: `generateCityChunk` (data), `buildCityChunk`
   (meshes per level), `createCityMaterials` (shared materials) and `createGroundMaterial`.
 - `src/main.js`: loads the data, then wires the renderer, lights, day/night, the player
-  (controller + camera + proxy + effects), keyboard input and the HUD (street,
-  neighbourhood, player state and speed, touched building).
+  (controller + camera + proxy + effects), street life (road network, pedestrians, traffic),
+  wind audio, the free camera, keyboard input and the HUDs (street, neighbourhood, player
+  state and speed, touched building; benchmark panel).
 
 ## Using the collision data
 

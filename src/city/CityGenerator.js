@@ -18,6 +18,7 @@ import { createRng, hashString } from './random.js';
 import { CityCollisionWorld } from './CityCollision.js';
 import { createProjection } from './geo.js';
 import { createTerrain, footprintGround, FLAT_TERRAIN } from './terrain.js';
+import { generateStreetProps, createStreetPropGeometries, createStreetPropMaterial, createLightPoolMaterial } from './StreetProps.js';
 import {
   cleanRing, orientRings, footprintArea, ringsBounds, ringCentroid, pointInRings, distanceToEdges,
   discInside, segmentDistance, decomposeFootprint, orientedBox, simplifyRing,
@@ -330,6 +331,8 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
       surface: ASPHALT.has(src.highway) ? 'asphalt' : 'paving',
       major: MAJOR.has(src.highway),
       width,
+      // Traffic direction: 1 = along the points, -1 = against them, 0 = both ways.
+      oneway: src.oneway === 'yes' || src.oneway === '1' || src.oneway === 'true' ? 1 : src.oneway === '-1' ? -1 : 0,
       points: pts,
     };
     const ri = roads.push(road) - 1;
@@ -389,6 +392,9 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
 
   const places = (osm.places ?? []).map((p) => ({ ...proj.project(p.lat, p.lon), id: p.id, name: p.nameEn ?? p.name, nameLocal: p.name, place: p.place }));
 
+  // Street furniture and Mediterranean trees (adds their collision boxes).
+  const street = generateStreetProps({ roads, parks, osmTrees: trees, terrain, rng: rng.fork('street'), collision });
+
   // Extent of everything in the chunk (buildings, roads, parks), for culling and lookups.
   const bounds = { minX: Infinity, minZ: Infinity, maxX: -Infinity, maxZ: -Infinity };
   const grow = (b) => {
@@ -416,6 +422,7 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
     trees,
     places,
     roofProps: { solar, ac },
+    street,
     boxes: collision.boxes.filter(Boolean),
     bounds,
     stats: {
@@ -429,6 +436,9 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
       trees: trees.length,
       solarHeaters: solar.length,
       acUnits: ac.length,
+      lanterns: street.lamps.length,
+      benches: street.benches.length,
+      streetTrees: street.trees.length,
       colliders: collision.count,
     },
   };
@@ -1664,8 +1674,11 @@ export function createCityMaterials(uniforms, options = {}) {
     ac: new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.2 }),
     trunk: new THREE.MeshStandardMaterial({ roughness: 1 }),
     crown: new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true }),
+    props: createStreetPropMaterial(uniforms),
+    pool: createLightPoolMaterial(uniforms),
   };
   const geometries = {
+    ...createStreetPropGeometries(),
     solar: solarHeaterGeometry(),
     box: new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0),
     trunk: new THREE.CylinderGeometry(1, 1, 1, 6).translate(0, 0.5, 0),
@@ -1755,8 +1768,17 @@ export function buildChunkParts(chunk, { terrain = FLAT_TERRAIN, level = 'near' 
     const { solar, ac } = chunk.roofProps;
     inst('SolarHeaters', 'solar', 'solar', solar.map((s) => ({ x: s.x, y: s.y, z: s.z, sx: 1, sy: 1, sz: 1, color: 0xffffff })), { detail: true });
     inst('AcUnits', 'ac', 'box', ac.map((a) => ({ x: a.x, y: a.y, z: a.z, sx: a.w, sy: a.h, sz: a.d, ry: a.yaw, color: COLORS.ac })), { detail: true });
-    inst('TreeTrunks', 'trunk', 'trunk', chunk.trees.map((t) => ({ x: t.x, y: t.y, z: t.z, sx: t.trunkRadius, sy: t.trunkHeight + t.crownRadius * 0.5, sz: t.trunkRadius, color: COLORS.trunk })), { receive: false });
-    inst('TreeCrowns', 'crown', 'crown', chunk.trees.map((t) => ({ x: t.x, y: t.y + t.trunkHeight + t.crownRadius * 0.6, z: t.z, sx: t.crownRadius, sy: t.crownRadius * 0.85, sz: t.crownRadius, color: t.color })));
+    const st = chunk.street;
+    if (st) {
+      const item = (p, color = 0xffffff) => ({ x: p.x, y: p.y, z: p.z, sx: p.s, sy: p.s, sz: p.s, ry: p.ry, color });
+      inst('Lanterns', 'props', 'lamp', st.lamps.map((l) => item(l)), { detail: true });
+      inst('Benches', 'props', 'bench', st.benches.map((b) => item(b)), { detail: true });
+      inst('Bollards', 'props', 'bollard', st.bollards.map((b) => item(b)), { detail: true });
+      inst('Cypresses', 'props', 'cypress', st.trees.filter((t) => t.species === 'cypress').map((t) => item(t)));
+      inst('Olives', 'props', 'olive', st.trees.filter((t) => t.species === 'olive').map((t) => item(t, 0xe8eee0)));
+      // Warm pools of light under the lanterns (night only).
+      inst('LampPools', 'pool', 'pool', st.lamps.map((l) => ({ x: l.x, y: l.y + 0.12, z: l.z, sx: 16, sy: 1, sz: 16, color: 0xffc27a })), { cast: false, receive: false });
+    }
   }
   return parts;
 }

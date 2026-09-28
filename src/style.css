@@ -34,3 +34,55 @@ body {
 #hud .dim {
   color: #9aa7b4;
 }
+.bench-hud {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 190px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(10, 14, 20, 0.72);
+  color: #e6edf3;
+  font-size: 12px;
+  line-height: 1.55;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.bench-hud .row {
+  display: flex;
+  justify-content: space-between;
+}
+.bench-hud span {
+  color: #9aa7b4;
+}
+.bench-hud small {
+  color: #9aa7b4;
+  font-weight: normal;
+}
+.bench-hud .good { color: #7ee787; }
+.bench-hud .ok { color: #e3b341; }
+.bench-hud .bad { color: #ff7b72; }
+.bench-hud hr {
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  margin: 5px 0;
+}
+.bench-hud .extra {
+  color: #9aa7b4;
+}
+.bench-hud .legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  color: #9aa7b4;
+}
+.bench-hud kbd {
+  font: inherit;
+  color: #e6edf3;
+  padding: 0 3px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 3px;
+}
+@media (max-width: 640px) {
+  .bench-hud { top: auto; bottom: 12px; }
+}

@@ -1,7 +1,7 @@
-// Sun, sky and ambient light: a late-afternoon Mediterranean look.
+// Sun, sky and ambient light: a golden-hour Mediterranean look.
 //
 // - Physical sky (three's Sky addon) that also feeds the image-based ambient light.
-// - Sun from the west-south-west at ~45° elevation, warm #FFF3E0, with Cascaded Shadow
+// - Low golden-hour sun from the west-south-west (~32° elevation, #FFDDB0), with Cascaded Shadow
 //   Maps: crisp shadows next to the camera, progressively softer (lower texel density)
 //   with distance, out to `shadowFar`.
 // - Hemisphere fill: soft azure sky (#87CEEB) over a warm limestone bounce (#D2B48C).
@@ -11,7 +11,7 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { CSM } from 'three/addons/csm/CSM.js';
 
-export const SUN = Object.freeze({ elevationDeg: 45, azimuthDeg: 250 }); // azimuth: clockwise from north
+export const SUN = Object.freeze({ elevationDeg: 32, azimuthDeg: 250 }); // azimuth: clockwise from north
 
 /** Unit vector toward the sun (+X east, -Z north). */
 export function sunDirection({ elevationDeg, azimuthDeg } = SUN) {
@@ -23,7 +23,7 @@ const LOOK = {
   day: {
     background: new THREE.Color(0x9fc3dc), fog: new THREE.Color(0xdccfb8), fogNear: 300, fogFar: 3000,
     hemiSky: new THREE.Color(0x87ceeb), hemiGround: new THREE.Color(0xd2b48c), hemi: 0.4,
-    sun: new THREE.Color(0xfff3e0), sunIntensity: 3.6, env: 0.2, exposure: 0.78,
+    sun: new THREE.Color(0xffddb0), sunIntensity: 3.8, env: 0.2, exposure: 0.78,
   },
   night: {
     // Moonlight from above, warm light-pollution bounce from below, orange-brown city haze.

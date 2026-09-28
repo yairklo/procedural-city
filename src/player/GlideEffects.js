@@ -38,7 +38,9 @@ export class GlideEffects {
   update(snapshot, dt) {
     const v = snapshot.velocity;
     const speed = snapshot.speed;
-    const target = snapshot.state === 'glide' ? Math.min(1, Math.max(0, (speed - 9) / 18)) : 0;
+    // Gliding fast, or falling fast.
+    const fast = snapshot.state === 'glide' || (snapshot.state === 'air' && v.y < -10);
+    const target = fast ? Math.min(1, Math.max(0, (speed - 9) / 18)) : 0;
     this.intensity += (target - this.intensity) * (1 - Math.exp(-4 * dt));
     this.object3D.visible = this.intensity > 0.01;
     if (!this.object3D.visible) return;

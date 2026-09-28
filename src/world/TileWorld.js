@@ -478,6 +478,14 @@ export class TileWorld {
     }
     this._setGroundLevel(cell, level);
     cell.level = level;
+    this.version = (this.version ?? 0) + 1; // road network users rebuild when this changes
+  }
+
+  /** Roads of the cells at `levels` (default near + medium), for the pedestrian / traffic network. */
+  activeRoads(levels = ['near', 'medium']) {
+    const out = [];
+    for (const cell of this.cells.values()) if (cell.data && levels.includes(cell.level)) out.push(...cell.data.roads);
+    return out;
   }
 
   /** Per frame, after the camera moved: hides rooftop props far from the camera. */

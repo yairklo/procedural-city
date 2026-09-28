@@ -25,9 +25,9 @@ export const DEFAULT_CAMERA_OPTIONS = Object.freeze({
   followDelay: 1.2, // seconds of mouse idle before the camera drifts behind the character
   followRate: 1.6, // rad/s drift on the ground
   glideFollowRate: 3,
-  fov: 62,
-  glideFovBoost: 14, // extra degrees at high glide speed
-  fovSpeedRange: [12, 32], // m/s over which the boost ramps in
+  fov: 60,
+  glideFovBoost: 15, // extra degrees at high speed in falls and glides (60 -> 75)
+  fovSpeedRange: [10, 32], // m/s over which the boost ramps in
   collisionPadding: 0.35,
   terrainClearance: 0.4,
 });
@@ -108,7 +108,10 @@ export class PlayerCamera {
 
     // FOV widens with glide speed.
     const [s0, s1] = o.fovSpeedRange;
-    const k = Math.min(1, Math.max(0, (snapshot.speed - s0) / (s1 - s0))) * this.glideAmount;
+    // Fast descent: gliding, or falling (not jumping on the spot).
+    const fast = snapshot.state === 'glide' || (snapshot.state === 'air' && snapshot.velocity.y < -6);
+    this.speedFeel = damp(this.speedFeel ?? 0, fast ? 1 : 0, 3, dt);
+    const k = Math.min(1, Math.max(0, (snapshot.speed - s0) / (s1 - s0))) * this.speedFeel;
     const fov = damp(this.camera.fov, o.fov + o.glideFovBoost * k, 3, dt);
     if (Math.abs(fov - this.camera.fov) > 1e-3) {
       this.camera.fov = fov;

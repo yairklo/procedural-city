@@ -9,6 +9,12 @@ import { PlayerController } from './player/PlayerController.js';
 import { PlayerCamera } from './player/PlayerCamera.js';
 import { PlayerProxy } from './player/PlayerProxy.js';
 import { GlideEffects } from './player/GlideEffects.js';
+import { FreeCamera } from './player/FreeCamera.js';
+import { RoadNetwork } from './city/RoadNetwork.js';
+import { PedestrianSystem } from './city/PedestrianSystem.js';
+import { TrafficSystem } from './city/TrafficSystem.js';
+import { WindAudio } from './audio/WindAudio.js';
+import { BenchmarkHUD } from './ui/BenchmarkHUD.js';
 import './style.css';
 
 // ------------------------------------------------------------------------------------------------
@@ -29,7 +35,7 @@ renderer.info.autoReset = false; // count every pass of a frame (shadows, AO, po
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.3, 4000);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.3, 4000);
 
 // ------------------------------------------------------------------------------------------------
 // Lighting + day / night
@@ -61,17 +67,26 @@ const proxy = new PlayerProxy();
 const glideFx = new GlideEffects();
 scene.add(proxy.object3D, glideFx.object3D);
 proxy.object3D.traverse((o) => o.material && lighting.setupMaterial(o.material));
+const freeCam = new FreeCamera(camera, renderer.domElement);
+const wind = new WindAudio();
+const benchHud = new BenchmarkHUD(document.body);
 
 const keys = new Set();
 let boostQueued = false;
+// Browsers only start audio from a user gesture.
+window.addEventListener('pointerdown', () => wind.start());
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
   keys.add(e.code);
   if (e.repeat) return;
+  wind.start();
+  if (e.code === 'KeyC') toggleFreeCam();
+  if (e.code === 'KeyM') wind.toggleMute();
+  if (e.code === 'KeyB') benchHud.toggle();
   if (e.code === 'KeyN') nightTarget = nightTarget > 0.5 ? 0 : 1;
-  if (e.code === 'KeyR') respawn();
+  if (e.code === 'KeyR' && !freeCam.enabled) respawn();
   if (e.code === 'KeyP') post.enabled = !post.enabled;
-  if (e.code === 'KeyE') boostQueued = true; // debug super-jump to reach rooftops
+  if (e.code === 'KeyE' && !freeCam.enabled) boostQueued = true; // debug super-jump to reach rooftops
   if (e.code === 'KeyH') showHelp = !showHelp;
 });
 let showHelp = true;
@@ -79,6 +94,19 @@ window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
 
 const held = (...codes) => codes.some((c) => keys.has(c));
+
+/** C: fly the camera freely (the player waits where it is; the world streams around the camera). */
+function toggleFreeCam() {
+  if (!player) return;
+  if (freeCam.enabled) {
+    freeCam.disable();
+    playerCamera.enabled = true;
+    playerCamera.snapTo(player.snapshot());
+  } else {
+    playerCamera.enabled = false;
+    freeCam.enable();
+  }
+}
 
 function readInput() {
   const input = {
@@ -100,6 +128,10 @@ function readInput() {
 
 /** @type {TileWorld | null} */
 let world = null;
+/** @type {PedestrianSystem | null} */
+let pedestrians = null;
+/** @type {TrafficSystem | null} */
+let traffic = null;
 
 const DATA = `${import.meta.env.BASE_URL}data/`;
 const getJson = async (url, { optional = false } = {}) => {
@@ -139,13 +171,24 @@ async function loadWorld() {
   player = new PlayerController(world.collision, spawn);
   playerCamera ??= new PlayerCamera(camera, renderer.domElement, world.collision);
   playerCamera.setCollision(world.collision);
-  player.on('land', (e) => e.impact > 12 && console.debug(`[player] hard landing ${e.impact.toFixed(1)} m/s`));
+  player.on('land', (e) => {
+    lastLanding = { x: player.position.x, z: player.position.z, impact: e.impact, time: timer.elapsedTime };
+    if (e.impact > 12) console.debug(`[player] hard landing ${e.impact.toFixed(1)} m/s`);
+  });
+
+  // Street life: pedestrians on the sidewalks, cars / vans and the light rail on the roads.
+  pedestrians = new PedestrianSystem({ collision: world.collision });
+  traffic = new TrafficSystem({ collision: world.collision, uniforms: world.uniforms });
+  traffic.setPoolMaterial(world.materials.pool);
+  lighting.setupMaterial(pedestrians.mesh.material);
+  lighting.nearShadowsOnly(pedestrians.mesh);
+  scene.add(pedestrians.mesh, traffic.group);
   respawn();
 
   // Handy for debugging from the devtools console.
   window.world = world;
   window.debug = {
-    camera, playerCamera, player, proxy, scene, renderer, lighting, post, world,
+    camera, playerCamera, player, proxy, scene, renderer, lighting, post, world, pedestrians, traffic, freeCam, wind,
     setNight: (v) => { night = nightTarget = v; applyLook(v); },
   };
   console.info('[world]', world.stats(), `legacy: ${world.legacy ? `${world.legacy.kept} features kept, ${world.legacy.skipped} superseded by tiles` : 'none'}`);
@@ -159,6 +202,58 @@ function respawn() {
 }
 
 // ------------------------------------------------------------------------------------------------
+// Street life
+// ------------------------------------------------------------------------------------------------
+
+let lastLanding = null;
+let networkVersion = -1;
+let networkTimer = 0;
+const shadowed = new WeakSet();
+
+/** Rebuilds the shared road graph when cells change level (at most twice a second). */
+function updateRoadNetwork(dt) {
+  networkTimer -= dt;
+  if (world.version === networkVersion || networkTimer > 0) return;
+  networkVersion = world.version;
+  networkTimer = 0.5;
+  const network = RoadNetwork.fromRoads(world.activeRoads());
+  pedestrians.setNetwork(network);
+  traffic.setNetwork(network);
+  // The tram is (re)built with the network: hook its materials into the shadows.
+  traffic.group.traverse((o) => {
+    if (o.material) lighting.setupMaterial(o.material);
+    if (o.isInstancedMesh && o.castShadow && !shadowed.has(o)) {
+      shadowed.add(o);
+      lighting.nearShadowsOnly(o);
+    }
+  });
+}
+
+/**
+ * What pedestrians scatter from: the player gliding or falling fast close above the street,
+ * or a hard landing in the last half second.
+ */
+function playerThreat(s) {
+  const p = s.position;
+  const low = p.y - world.collision.terrainHeight(p.x, p.z) < 4;
+  const fast = (s.state === 'glide' && s.speed > 7) || (s.state === 'air' && s.velocity.y < -9);
+  if (low && fast) return { x: p.x, z: p.z, active: true };
+  if (lastLanding && timer.elapsedTime - lastLanding.time < 0.5 && lastLanding.impact > 7) {
+    return { x: lastLanding.x, z: lastLanding.z, active: true };
+  }
+  return null;
+}
+
+function updateStreetLife(dt, snap) {
+  updateRoadNetwork(dt);
+  const center = camera.position;
+  pedestrians.update(dt, center, snap && !freeCam.enabled ? playerThreat(snap) : null);
+  traffic.update(dt, center, snap?.position ?? null);
+  pedestrians.render(camera, timer.elapsedTime);
+  traffic.render(camera);
+}
+
+// ------------------------------------------------------------------------------------------------
 // HUD
 // ------------------------------------------------------------------------------------------------
 
@@ -169,7 +264,6 @@ function updateHud(dt) {
   frames++;
   hudTimer += dt;
   if (hudTimer < 0.25 || !world || !player) return;
-  const fps = Math.round(frames / hudTimer);
   frames = 0;
   hudTimer = 0;
 
@@ -183,10 +277,8 @@ function updateHud(dt) {
   const touched = touching ? world.buildingById(touching.ref) : null;
   const locked = document.pointerLockElement === renderer.domElement;
 
-  const info = renderer.info.render;
   hud.innerHTML =
     `<strong>${world.name}</strong>${place ? ` <span class="dim">· ${place.name}</span>` : ''}\n` +
-    `${fps} fps · ${info.calls} draw calls/frame (all passes) · ${(info.triangles / 1000).toFixed(0)}k tris\n` +
     `<span class="dim">at</span> ${where}  <span class="dim">${(p.y + world.terrain.datum).toFixed(0)} m ASL</span>\n` +
     `<span class="dim">${s.state}</span> ${s.horizontalSpeed.toFixed(1)} m/s` +
     (s.state === 'glide' ? ` · sink ${(-s.velocity.y).toFixed(1)} m/s · pitch ${((s.glidePitch * 180) / Math.PI).toFixed(0)}°` : '') +
@@ -194,7 +286,7 @@ function updateHud(dt) {
     (touched ? `<span class="dim">touching</span> ${touched.name ?? touched.address ?? touched.id} · ${touched.heightAboveGround.toFixed(1)} m (${touched.heightSource})\n` : '') +
     (showHelp
       ? `<span class="dim">WASD move · Shift run · Space jump (hold: higher) · hold Space in the air: glide (W dive · S climb · A/D or mouse steer) · ` +
-        `${locked ? 'Esc frees the mouse' : 'click: mouse look'} · wheel zoom · E boost · N night · P post-fx ${post.enabled ? 'on' : 'off'} · R respawn · H hide</span>\n`
+        `${locked ? 'Esc frees the mouse' : 'click: mouse look'} · wheel zoom · E boost · N night · C free cam (Q/E down/up) · M mute · B stats · P post-fx ${post.enabled ? 'on' : 'off'} · R respawn · H hide</span>\n`
       : `<span class="dim">H: controls</span>\n`) +
     (() => { const w = world.stats(); return `<span class="dim">tiles ${w.levels.near} near · ${w.levels.medium} medium · ${w.levels.far} far · ${w.colliders} colliders${w.loading ? ` · loading ${w.loading}` : ''}</span>\n`; })() +
     `<span class="dim">${world.attribution}</span>`;
@@ -231,7 +323,8 @@ loadWorld()
   });
 
 renderer.setAnimationLoop(() => {
-  const dt = Math.min(timer.getDelta(), 1 / 20);
+  const rawDt = timer.getDelta();
+  const dt = Math.min(rawDt, 1 / 20);
 
   if (Math.abs(night - nightTarget) > 1e-3) {
     night = THREE.MathUtils.damp(night, nightTarget, 2.5, dt);
@@ -240,21 +333,36 @@ renderer.setAnimationLoop(() => {
 
   if (bench && player && !bench.running && !bench.result) bench.start(world.spawn);
   const benchFrame = bench?.running ? bench.update() : null;
+  const flying = benchFrame || freeCam.enabled; // camera not tied to the player
+  let snap = null;
   if (player) {
-    if (!benchFrame) player.update(dt, readInput());
-    const snap = player.snapshot();
+    if (!flying) player.update(dt, readInput());
+    snap = player.snapshot();
     proxy.update(snap, dt);
     glideFx.update(snap, dt);
-    if (!benchFrame) playerCamera.update(dt, snap);
+    wind.update(flying ? { speed: 0, state: 'ground' } : snap);
+    if (freeCam.enabled) freeCam.update(dt, held);
+    else if (!benchFrame) playerCamera.update(dt, snap);
   }
   lighting.update();
   surroundings.update(camera);
   if (world && player) {
-    world.update(benchFrame ? camera.position : player.position);
+    world.update(flying ? camera.position : player.position);
     world.updateCamera(camera);
+    updateStreetLife(dt, snap);
   }
   renderer.info.reset();
   post.render(dt);
+  if (world && player) {
+    benchHud.update(rawDt, () => {
+      const info = renderer.info.render;
+      return {
+        calls: info.calls, triangles: info.triangles, buildings: world.stats().buildings,
+        vehicles: traffic.count, trams: traffic.rail ? 1 : 0, pedestrians: pedestrians.count,
+        extra: freeCam.enabled ? 'free camera · wheel: speed' : wind.muted ? 'sound muted' : '',
+      };
+    });
+  }
   if (benchFrame) {
     bench.record(benchFrame);
     if (bench.result) hud.innerHTML = formatBenchmark(bench.result);
