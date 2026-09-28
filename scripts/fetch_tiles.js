@@ -24,6 +24,7 @@ import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildQuery, convertOverpass } from './fetch_jerusalem.js';
+import { gridCellBBox, inBBox, ringVertexAverage, ownedRuns } from '../src/city/tiling.js';
 
 /** Tile (i, j) covers lon [west + i*dLon, +dLon) and lat [south + j*dLat, +dLat). i grows east, j grows north. */
 export const TILE_GRID = Object.freeze({ south: 31.765, west: 35.205, dLat: 0.005, dLon: 0.006 });
@@ -53,69 +54,18 @@ const ENDPOINTS = [
 const REQUEST_TIMEOUT_MS = 200_000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const r7 = (v) => Math.round(v * 1e7) / 1e7;
 
 export function tileBBox(i, j) {
-  const g = TILE_GRID;
-  return { south: r7(g.south + j * g.dLat), west: r7(g.west + i * g.dLon), north: r7(g.south + (j + 1) * g.dLat), east: r7(g.west + (i + 1) * g.dLon) };
+  return gridCellBBox(TILE_GRID, i, j);
 }
 
 export const tileId = (i, j) => `${i}_${j}`;
-const inTile = (b, lat, lon) => lat >= b.south && lat < b.north && lon >= b.west && lon < b.east;
+const inTile = inBBox;
+const ringCentroid = ringVertexAverage;
 
-function ringCentroid(ring) {
-  let lat = 0, lon = 0;
-  for (let k = 0; k < ring.length; k += 2) {
-    lat += ring[k];
-    lon += ring[k + 1];
-  }
-  const n = ring.length / 2;
-  return { lat: lat / n, lon: lon / n };
-}
-
-/** Liang-Barsky: the [t0, t1] part of segment a->b inside the tile rectangle, or null. */
-function clipSegment(aLat, aLon, bLat, bLon, b) {
-  let t0 = 0, t1 = 1;
-  const dLat = bLat - aLat, dLon = bLon - aLon;
-  for (const [p, q] of [[-dLon, aLon - b.west], [dLon, b.east - aLon], [-dLat, aLat - b.south], [dLat, b.north - aLat]]) {
-    if (p === 0) {
-      if (q < 0) return null;
-    } else {
-      const t = q / p;
-      if (p < 0) { if (t > t1) return null; if (t > t0) t0 = t; }
-      else { if (t < t0) return null; if (t < t1) t1 = t; }
-    }
-  }
-  return t1 > t0 ? [t0, t1] : null;
-}
-
-/**
- * Cuts a flat [lat, lon, ...] polyline at the tile border and returns the runs inside it.
- * Border crossings become new vertices, so the pieces of neighbouring tiles meet exactly
- * and no piece extends outside its tile. A piece lying exactly on a border goes to the
- * tile containing its midpoint (half-open bounds), so nothing is duplicated.
- */
-export function ownedRuns(points, b) {
-  const EPS = 1e-9;
-  const runs = [];
-  let run = null;
-  for (let k = 0; k + 3 < points.length; k += 2) {
-    const aLat = points[k], aLon = points[k + 1], bLat = points[k + 2], bLon = points[k + 3];
-    const c = clipSegment(aLat, aLon, bLat, bLon, b);
-    const at = (t) => [r7(aLat + (bLat - aLat) * t), r7(aLon + (bLon - aLon) * t)];
-    const mid = c && at((c[0] + c[1]) / 2);
-    if (!c || !inTile(b, mid[0], mid[1])) {
-      if (run) { runs.push(run); run = null; }
-      continue;
-    }
-    if (run && c[0] > EPS) { runs.push(run); run = null; } // re-entered the tile mid-segment
-    if (!run) run = at(c[0]);
-    run.push(...at(c[1]));
-    if (c[1] < 1 - EPS) { runs.push(run); run = null; } // left the tile
-  }
-  if (run) runs.push(run);
-  return runs;
-}
+// The ownership rules (vertex average, half-open bounds, Liang-Barsky road cutting) live in
+// src/city/tiling.js, shared with the game's legacy-data partition. Re-exported for callers.
+export { ownedRuns };
 
 /** Converts one tile's Overpass response and keeps only what the tile owns. */
 export function convertTile(raw, i, j, { fetchedAt } = {}) {

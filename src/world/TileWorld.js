@@ -25,10 +25,10 @@ import * as THREE from 'three';
 import { createProjection } from '../city/geo.js';
 import { createTerrain } from '../city/terrain.js';
 import { CityCollisionWorld } from '../city/CityCollision.js';
-import { ringCentroid } from '../city/footprint.js';
+import { gridCellBBox, gridCellOf, ringVertexAverage, ownedRuns, inBBox } from '../city/tiling.js';
 import {
   generateCityChunk, buildCityChunk, createCityMaterials, createGroundMaterial, createOuterMaterial,
-  terrainGeometry, findRoadsAt, polylineMidpoint, MAJOR_HIGHWAYS, DEFAULT_CITY_OPTIONS,
+  terrainGeometry, findRoadsAt, MAJOR_HIGHWAYS, DEFAULT_CITY_OPTIONS,
 } from '../city/CityGenerator.js';
 
 export const LEVELS = ['none', 'far', 'medium', 'near'];
@@ -104,7 +104,7 @@ export class TileWorld {
     for (let j = 0; j < this.ny; j++) {
       for (let i = 0; i < this.nx; i++) {
         const id = `${i}_${j}`;
-        const bbox = { south: g.south + j * g.dLat, north: g.south + (j + 1) * g.dLat, west: g.west + i * g.dLon, east: g.west + (i + 1) * g.dLon };
+        const bbox = gridCellBBox(g, i, j); // same rounded, half-open bounds as the tile files
         const nw = this.projection.project(bbox.north, bbox.west), se = this.projection.project(bbox.south, bbox.east);
         this.cells.set(id, {
           id, i, j, bbox,
@@ -128,40 +128,65 @@ export class TileWorld {
   /** Grid cell containing (x, z), or null outside the world. */
   cellAt(x, z) {
     const { lat, lon } = this.projection.unproject(x, z);
-    const g = this.manifest.grid;
-    const i = Math.floor((lon - g.west) / g.dLon), j = Math.floor((lat - g.south) / g.dLat);
+    return this.cellAtLatLon(lat, lon);
+  }
+
+  /** Grid cell owning (lat, lon) with the tiles' half-open bounds, or null outside the world. */
+  cellAtLatLon(lat, lon) {
+    const { i, j } = gridCellOf(this.manifest.grid, lat, lon);
     if (i < 0 || j < 0 || i >= this.nx || j >= this.ny) return null;
     return this.cells.get(`${i}_${j}`);
   }
 
   /**
-   * Splits the legacy file by cell (building / park / road-area centroid, road midpoint,
-   * tree position). Features in cells that have a manifest tile, or outside the world, are
-   * dropped: those cells are the tile's alone.
+   * Splits the legacy file by cell with exactly the tile pipeline's ownership rules
+   * (src/city/tiling.js): buildings, parks and road areas by the vertex average of the outer
+   * ring, trees by position (half-open cell bounds), and roads cut at every cell border
+   * (Liang-Barsky, new vertex on the border). Whatever falls in a cell that has a manifest
+   * tile, or outside the world, is dropped: those cells are the tile's alone, so a feature on
+   * a border and a road running into a tile are never shown twice and never leave a gap.
    */
   _partitionLegacy(legacy) {
-    const proj = this.projection;
     const sub = new Map();
-    const bucket = (x, z) => {
-      const cell = this.cellAt(x, z);
+    const target = (cell) => {
       if (!cell || cell.tile) return null;
       if (!sub.has(cell.id)) sub.set(cell.id, { ...legacy, buildings: [], roads: [], roadAreas: [], parks: [], trees: [], places: [] });
       return sub.get(cell.id);
     };
-    const centroidOf = (rings) => ringCentroid(proj.projectFlat(rings[0]));
     let kept = 0, skipped = 0;
-    const put = (list, item, x, z) => {
-      const s = bucket(x, z);
+    const byRing = (list, item) => {
+      const c = ringVertexAverage(item.rings[0]);
+      const s = target(this.cellAtLatLon(c.lat, c.lon));
       if (s) { s[list].push(item); kept++; } else skipped++;
     };
-    for (const b of legacy.buildings ?? []) { const c = centroidOf(b.rings); put('buildings', b, c.x, c.z); }
-    for (const pk of legacy.parks ?? []) { const c = centroidOf(pk.rings); put('parks', pk, c.x, c.z); }
-    for (const a of legacy.roadAreas ?? []) { const c = centroidOf(a.rings); put('roadAreas', a, c.x, c.z); }
-    for (const r of legacy.roads ?? []) { const m = polylineMidpoint(proj.projectFlat(r.points)); put('roads', r, m.x, m.z); }
+    for (const b of legacy.buildings ?? []) byRing('buildings', b);
+    for (const pk of legacy.parks ?? []) byRing('parks', pk);
+    for (const a of legacy.roadAreas ?? []) byRing('roadAreas', a);
+
+    for (const road of legacy.roads ?? []) {
+      // Cells the road's bounding box touches; each keeps the runs it owns.
+      let s0 = Infinity, n0 = -Infinity, w0 = Infinity, e0 = -Infinity;
+      for (let k = 0; k < road.points.length; k += 2) {
+        s0 = Math.min(s0, road.points[k]); n0 = Math.max(n0, road.points[k]);
+        w0 = Math.min(w0, road.points[k + 1]); e0 = Math.max(e0, road.points[k + 1]);
+      }
+      const lo = gridCellOf(this.manifest.grid, s0, w0), hi = gridCellOf(this.manifest.grid, n0, e0);
+      const pieces = [];
+      for (let j = Math.max(0, lo.j); j <= Math.min(this.ny - 1, hi.j); j++) {
+        for (let i = Math.max(0, lo.i); i <= Math.min(this.nx - 1, hi.i); i++) {
+          const cell = this.cells.get(`${i}_${j}`);
+          for (const points of ownedRuns(road.points, cell.bbox)) pieces.push({ cell, points });
+        }
+      }
+      pieces.forEach(({ cell, points }, k) => {
+        const s = target(cell);
+        if (s) { s.roads.push({ ...road, id: pieces.length > 1 ? `${road.id}.${k}` : road.id, points }); kept++; } else skipped++;
+      });
+    }
+
     const t = legacy.trees ?? [];
     for (let k = 0; k + 1 < t.length; k += 2) {
-      const { x, z } = proj.project(t[k], t[k + 1]);
-      const s = bucket(x, z);
+      const s = target(this.cellAtLatLon(t[k], t[k + 1]));
       if (s) s.trees.push(t[k], t[k + 1]);
     }
     for (const [id, osm] of sub) {
@@ -170,7 +195,7 @@ export class TileWorld {
       cell.source = 'legacy';
     }
     const bb = legacy.bbox;
-    return { kept, skipped, bbox: bb, center: proj.project((bb.north + bb.south) / 2, (bb.east + bb.west) / 2), raw: legacy };
+    return { kept, skipped, bbox: bb, center: this.projection.project((bb.north + bb.south) / 2, (bb.east + bb.west) / 2), raw: legacy };
   }
 
   _collectPlaces(legacy) {

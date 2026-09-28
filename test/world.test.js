@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { convertOverpass } from '../scripts/fetch_jerusalem.js';
 import { createProjection } from '../src/city/geo.js';
 import { ringCentroid } from '../src/city/footprint.js';
-import { polylineMidpoint } from '../src/city/CityGenerator.js';
+import { gridCellBBox, gridCellOf, ringVertexAverage, ownedRuns } from '../src/city/tiling.js';
 import { TileWorld } from '../src/world/TileWorld.js';
 import { PlayerController } from '../src/player/PlayerController.js';
 import { syntheticOverpass } from './helpers/synthetic.js';
@@ -25,27 +25,35 @@ function syntheticDem() {
 }
 const DEM = syntheticDem();
 
-/** Splits the synthetic city into tile files the way the fetch pipeline does (centroid / midpoint per cell). */
-function makeTiles() {
-  const proj = createProjection(WORLD);
-  const cellOf = (x, z) => {
-    const { lat, lon } = proj.unproject(x, z);
-    return `${Math.floor((lon - GRID.west) / GRID.dLon)}_${Math.floor((lat - GRID.south) / GRID.dLat)}`;
-  };
+/** Splits the synthetic city into tile files with the fetch pipeline's own rules (src/city/tiling.js). */
+function makeTiles(osm = FULL) {
   const tiles = new Map();
-  const tile = (id) => {
-    if (!tiles.has(id)) tiles.set(id, { ...FULL, buildings: [], roads: [], roadAreas: [], parks: [], trees: [], places: [] });
+  const tile = (i, j) => {
+    const id = `${i}_${j}`;
+    if (!tiles.has(id)) tiles.set(id, { ...osm, bbox: gridCellBBox(GRID, i, j), buildings: [], roads: [], roadAreas: [], parks: [], trees: [], places: [] });
     return tiles.get(id);
   };
-  for (const b of FULL.buildings) { const c = ringCentroid(proj.projectFlat(b.rings[0])); tile(cellOf(c.x, c.z)).buildings.push(b); }
-  for (const pk of FULL.parks) { const c = ringCentroid(proj.projectFlat(pk.rings[0])); tile(cellOf(c.x, c.z)).parks.push(pk); }
-  for (const a of FULL.roadAreas) { const c = ringCentroid(proj.projectFlat(a.rings[0])); tile(cellOf(c.x, c.z)).roadAreas.push(a); }
-  for (const r of FULL.roads) { const m = polylineMidpoint(proj.projectFlat(r.points)); tile(cellOf(m.x, m.z)).roads.push(r); }
+  const byRing = (list, item) => {
+    const c = ringVertexAverage(item.rings[0]);
+    const { i, j } = gridCellOf(GRID, c.lat, c.lon);
+    tile(i, j)[list].push(item);
+  };
+  for (const b of osm.buildings) byRing('buildings', b);
+  for (const pk of osm.parks) byRing('parks', pk);
+  for (const a of osm.roadAreas) byRing('roadAreas', a);
+  for (const r of osm.roads) {
+    for (let j = 0; j < 2; j++) {
+      for (let i = 0; i < 3; i++) {
+        const runs = ownedRuns(r.points, gridCellBBox(GRID, i, j));
+        runs.forEach((points, k) => tile(i, j).roads.push({ ...r, id: runs.length > 1 ? `${r.id}.${k}` : r.id, points }));
+      }
+    }
+  }
   return tiles;
 }
 const TILES = makeTiles();
 
-function makeWorld({ tiles = [], legacy = false, failing = [], options = {} } = {}) {
+function makeWorld({ tiles = [], legacy = false, failing = [], options = {}, source = FULL, tileData = TILES } = {}) {
   const manifest = {
     format: 'tiles-v1',
     attribution: '© OpenStreetMap contributors',
@@ -62,9 +70,9 @@ function makeWorld({ tiles = [], legacy = false, failing = [], options = {} } = 
     const id = file.slice(4, -5);
     loads.push(id);
     if (failing.includes(id)) throw new Error('HTTP 404');
-    return TILES.get(id) ?? { ...FULL, buildings: [], roads: [], roadAreas: [], parks: [], trees: [] };
+    return tileData.get(id) ?? { ...source, buildings: [], roads: [], roadAreas: [], parks: [], trees: [] };
   };
-  const world = new TileWorld({ manifest, dem: DEM, legacy: legacy ? FULL : null, loadTile, options });
+  const world = new TileWorld({ manifest, dem: DEM, legacy: legacy ? source : null, loadTile, options });
   world.loads = loads;
   return world;
 }
@@ -95,10 +103,10 @@ test('no duplicates between tiles and legacy data in the overlap', async () => {
   const buildings = [], roads = [];
   for (const cell of world.cells.values()) {
     for (const b of cell.data?.buildings ?? []) buildings.push(b.osmId);
-    for (const r of cell.data?.roads ?? []) roads.push(r.id);
+    for (const r of cell.data?.roads ?? []) if (r.points) for (let k = 0; k + 3 < r.points.length; k += 2) roads.push(r.points.slice(k, k + 4).map((v) => v.toFixed(3)).join(','));
   }
   assert.equal(new Set(buildings).size, buildings.length, 'no building twice');
-  assert.equal(new Set(roads).size, roads.length, 'no road twice');
+  assert.equal(new Set(roads).size, roads.length, 'no road segment twice');
   // Every source building appears exactly once (tiles took their cells, legacy the rest).
   assert.deepEqual([...buildings].sort(), FULL.buildings.map((b) => b.id).sort());
   assert.equal(world.cells.get('0_0').source, 'tile');
@@ -201,3 +209,70 @@ test('spawn: on Jaffa Road when the legacy data is loaded, else on a street in a
 function RANK(level) {
   return ['none', 'far', 'medium', 'near'].indexOf(level);
 }
+
+// --- Ownership on cell borders -------------------------------------------------------------------
+
+const B_LAT = gridCellBBox(GRID, 0, 1).south; // border between rows j = 0 and j = 1
+const B_LON = gridCellBBox(GRID, 1, 0).west; // border between columns i = 0 and i = 1
+
+/**
+ * A building straddling the row border: its AREA centroid is south of the border, but its
+ * outer ring has many (collinear) vertices on the north edge, so its VERTEX AVERAGE (the
+ * pipeline's rule) is north of it.
+ */
+function borderBuilding() {
+  const L = GRID.west + 1.5 * GRID.dLon, s = B_LAT - 0.0004, n = B_LAT + 0.0001;
+  const ring = [s, L, s, L + 0.0004];
+  for (let k = 0; k <= 8; k++) ring.push(n, L + 0.0004 - k * 0.00005); // north edge, east to west
+  return { id: 'w900001', tags: { building: 'yes' }, rings: [ring] };
+}
+
+test('ownership: a building on a border goes where the pipeline puts it (vertex average)', async () => {
+  const b = borderBuilding();
+  const proj = createProjection(WORLD);
+  const avg = ringVertexAverage(b.rings[0]);
+  const area = proj.unproject(ringCentroid(proj.projectFlat(b.rings[0])).x, ringCentroid(proj.projectFlat(b.rings[0])).z);
+  assert.ok(avg.lat >= B_LAT && area.lat < B_LAT, 'the two centroids disagree: vertex average north, area centroid south');
+  const legacy = { ...FULL, buildings: [b], roads: [], roadAreas: [], parks: [], trees: [] };
+  const owner = makeTiles(legacy); // how the pipeline would tile it
+  assert.equal([...owner.entries()].find(([, t]) => t.buildings.length)[0], '1_1');
+
+  // North cell is a tile: the legacy copy must be skipped (the tile has it).
+  const w1 = makeWorld({ tiles: ['1_1'], legacy: true, source: legacy, tileData: owner });
+  assert.equal(w1.cells.get('1_0').legacyOsm?.buildings.length ?? 0, 0, 'not in the south legacy cell');
+  assert.equal(w1.legacy.skipped, 1);
+  await w1.settle({ x: 0, z: 0 });
+  const found = [...w1.cells.values()].flatMap((c) => c.data?.buildings ?? []).filter((x) => x.osmId === b.id);
+  assert.equal(found.length, 1, 'shown exactly once (from the tile)');
+  assert.equal(found[0].id, `OSM-${b.id}`);
+  assert.equal(w1.cells.get('1_1').source, 'tile');
+
+  // South cell is a tile instead: the legacy copy stays in the north cell (the tile doesn't have it).
+  const w2 = makeWorld({ tiles: ['1_0'], legacy: true, source: legacy, tileData: owner });
+  assert.equal(w2.cells.get('1_1').legacyOsm.buildings.length, 1);
+});
+
+test('ownership: a legacy road crossing into a tile cell is cut on the border, no gap, no double', async () => {
+  const lat = GRID.south + 0.3 * GRID.dLat;
+  const road = { id: 'w900002', highway: 'residential', name: 'Border St', nameEn: 'Border Street', points: [lat, GRID.west + 0.4 * GRID.dLon, lat + 0.0003, GRID.west + 1.6 * GRID.dLon] };
+  const legacy = { ...FULL, buildings: [], roads: [road], roadAreas: [], parks: [], trees: [] };
+  const owner = makeTiles(legacy);
+  const west = owner.get('0_0').roads[0].points, east = owner.get('1_0').roads[0].points;
+  assert.deepEqual(west.slice(-2), east.slice(0, 2), 'the pipeline cuts at a shared border vertex');
+  assert.equal(west.at(-1), B_LON);
+
+  // East cell is a tile: legacy keeps only the western piece, ending exactly on the border.
+  const w = makeWorld({ tiles: ['1_0'], legacy: true, source: legacy, tileData: owner });
+  const pieces = w.cells.get('0_0').legacyOsm.roads;
+  assert.equal(pieces.length, 1);
+  assert.deepEqual(pieces[0].points, west, 'same piece as the pipeline would make');
+  assert.equal(w.cells.get('1_0').legacyOsm, null);
+  await w.settle({ x: 0, z: 0 });
+  const a = w.cells.get('0_0').data.roads[0].points, b = w.cells.get('1_0').data.roads[0].points;
+  assert.deepEqual([a.at(-2), a.at(-1)], [b[0], b[1]], 'legacy piece and tile piece meet at one vertex');
+
+  // No tile at all: both legacy pieces, meeting on the border.
+  const w0 = makeWorld({ legacy: true, source: legacy });
+  assert.deepEqual(w0.cells.get('0_0').legacyOsm.roads[0].points, west);
+  assert.deepEqual(w0.cells.get('1_0').legacyOsm.roads[0].points, east);
+});
