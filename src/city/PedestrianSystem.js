@@ -65,6 +65,8 @@ export class PedestrianSystem {
     // Appearance has its own stream, so looks never change how anyone moves.
     this.lookRng = createRng(`${this.o.seed}/look`);
     this.network = null;
+    /** @type {import('./RiggedPedestrians.js').RiggedPedestrians | null} */
+    this.rigged = null;
     this.walkEdges = [];
     this.agents = [];
     this.groups = [];
@@ -160,6 +162,8 @@ export class PedestrianSystem {
       const dressAlike = theme < 0.3 && kind !== 'solo';
       const look = this.lookRng;
       const clothing = rng.next(); // one draw on the behaviour stream, as before
+      // Haredi men: groups dressed alike, and some people walking alone.
+      const haredi = dressAlike || (kind === 'solo' && look.chance(0.12));
       const a = {
         role, index, group,
         edge, forward, s, offset, offsetScale: 1,
@@ -169,8 +173,9 @@ export class PedestrianSystem {
         stride: rng.range(0.9, 1.1),
         scale: (role === 'trail' && kind === 'cluster' && index === 1 ? 0.7 : 1) * rng.range(0.88, 1.12),
         girth: rng.range(0.9, 1.12),
-        color: dressAlike ? HAREDI.top : TOPS[Math.floor(clothing * TOPS.length)],
-        lower: dressAlike ? HAREDI.bottom : look.pick(BOTTOMS),
+        color: haredi ? HAREDI.top : TOPS[Math.floor(clothing * TOPS.length)],
+        lower: haredi ? HAREDI.bottom : look.pick(BOTTOMS),
+        rigged: haredi, // may be drawn as the rigged Haredi model up close
         skin: look.next(), // 0 = light .. 1 = dark
         hair: look.next(),
         moving: speed,
@@ -360,9 +365,11 @@ export class PedestrianSystem {
     const r2 = this.o.radius * this.o.radius;
     const p = camera.position;
     let n = 0;
+    const riggedAgents = this.rigged ? this.rigged.assign(this.agents, camera) : null;
     for (const a of this.agents) {
       const dx = a.x - p.x, dz = a.z - p.z;
       if (dx * dx + dz * dz > r2) continue;
+      if (riggedAgents?.has(a)) continue; // drawn as a rigged model
       this._q.setFromAxisAngle(this._up, a.yaw);
       this._s.set(a.scale * a.girth, a.scale, a.scale * a.girth);
       this._m.compose(this._v.set(a.x, a.y, a.z), this._q, this._s);
@@ -375,7 +382,8 @@ export class PedestrianSystem {
       n++;
     }
     mesh.count = n;
-    this.visible = n;
+    this.visible = n + (riggedAgents ? riggedAgents.size : 0);
+    this.rigged?.update(time);
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     walk.needsUpdate = true;
@@ -383,10 +391,16 @@ export class PedestrianSystem {
     mesh.material.userData.uniforms.uTime.value = time;
   }
 
+  /** Hands the nearest eligible agents to rigged, animated models (see RiggedPedestrians). */
+  attachRigged(rigged) {
+    this.rigged = rigged;
+  }
+
   dispose() {
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
     this.mesh.customDepthMaterial?.dispose();
+    this.rigged?.dispose();
     this.mesh.dispose();
   }
 }

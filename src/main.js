@@ -13,6 +13,7 @@ import { GlideEffects } from './player/GlideEffects.js';
 import { FreeCamera } from './player/FreeCamera.js';
 import { RoadNetwork } from './city/RoadNetwork.js';
 import { PedestrianSystem } from './city/PedestrianSystem.js';
+import { RiggedPedestrians } from './city/RiggedPedestrians.js';
 import { TrafficSystem } from './city/TrafficSystem.js';
 import { WindAudio } from './audio/WindAudio.js';
 import { BenchmarkHUD } from './ui/BenchmarkHUD.js';
@@ -197,6 +198,17 @@ async function loadWorld() {
   lighting.setupMaterial(pedestrians.mesh.material);
   lighting.nearShadowsOnly(pedestrians.mesh);
   scene.add(pedestrians.mesh, traffic.group);
+  // Up close, some pedestrians (Haredi men) are drawn as a rigged, animated model. Loaded in
+  // the background; until then (or if it fails) everyone stays an instanced mannequin.
+  const peds = pedestrians;
+  RiggedPedestrians.load(`${import.meta.env.BASE_URL}models/pedestrians_pilot.glb`)
+    .then((rigged) => {
+      if (pedestrians !== peds) return rigged.dispose();
+      for (const m of rigged.materials()) lighting.setupMaterial(m);
+      scene.add(rigged.group);
+      peds.attachRigged(rigged);
+    })
+    .catch((err) => console.warn(`[pedestrians] rigged models unavailable: ${err.message}`));
   respawn();
 
   // Handy for debugging from the devtools console.
