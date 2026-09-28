@@ -21,13 +21,13 @@ export function sunDirection({ elevationDeg, azimuthDeg } = SUN) {
 
 const LOOK = {
   day: {
-    background: new THREE.Color(0x9fc3dc), fog: new THREE.Color(0xdccfb8), fogNear: 250, fogFar: 1800,
+    background: new THREE.Color(0x9fc3dc), fog: new THREE.Color(0xdccfb8), fogNear: 300, fogFar: 3000,
     hemiSky: new THREE.Color(0x87ceeb), hemiGround: new THREE.Color(0xd2b48c), hemi: 0.4,
     sun: new THREE.Color(0xfff3e0), sunIntensity: 3.6, env: 0.2, exposure: 0.78,
   },
   night: {
     // Moonlight from above, warm light-pollution bounce from below, orange-brown city haze.
-    background: new THREE.Color(0x0a0c14), fog: new THREE.Color(0x1f1710), fogNear: 250, fogFar: 2600,
+    background: new THREE.Color(0x0a0c14), fog: new THREE.Color(0x1f1710), fogNear: 250, fogFar: 3000,
     hemiSky: new THREE.Color(0x3a4a78), hemiGround: new THREE.Color(0x5a3c20), hemi: 0.3,
     sun: new THREE.Color(0xa8bcff), sunIntensity: 0.32, env: 0.07, exposure: 1.15,
   },

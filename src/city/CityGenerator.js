@@ -20,7 +20,7 @@ import { createProjection } from './geo.js';
 import { createTerrain, footprintGround, FLAT_TERRAIN } from './terrain.js';
 import {
   cleanRing, orientRings, footprintArea, ringsBounds, ringCentroid, pointInRings, distanceToEdges,
-  discInside, segmentDistance, decomposeFootprint, orientedBox,
+  discInside, segmentDistance, decomposeFootprint, orientedBox, simplifyRing,
 } from './footprint.js';
 
 export const DEFAULT_CITY_OPTIONS = Object.freeze({
@@ -99,6 +99,7 @@ const ASPHALT = new Set([
   'secondary_link', 'tertiary_link', 'unclassified', 'residential', 'living_street', 'service', 'road', 'busway', 'track',
 ]);
 const MAJOR = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'pedestrian']);
+export const MAJOR_HIGHWAYS = MAJOR;
 
 const SMALL_TYPES = new Set(['kiosk', 'shed', 'garage', 'garages', 'hut', 'cabin', 'toilets', 'service', 'transformer_tower', 'container', 'guardhouse']);
 const HOUSE_TYPES = new Set(['house', 'detached', 'semidetached_house', 'bungalow', 'terrace']);
@@ -194,6 +195,261 @@ export function findPlaceAt(data, x, z) {
   return best;
 }
 
+/**
+ * Turns one OSM data file (or part of one) into city data: projected, terrain-seated buildings
+ * with heights, roofs, rooftop props and collision boxes, roads with a lookup index, parks,
+ * trees and place labels. Pure data, no GPU objects.
+ *
+ * The projection and terrain are passed in, so every chunk of a tiled world shares the same
+ * fixed origin. `include(kind, x, z)` can drop features by position (building / park / road
+ * area centroid, road midpoint, tree position), e.g. where another data source takes over.
+ * Collision boxes are returned in `boxes` (not added anywhere), so a streaming world can add
+ * and remove them per chunk.
+ *
+ * @returns {{ id, buildings, buildingById, roads, roadGrid, parks, trees, places, roofProps, boxes, bounds, stats }}
+ */
+export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAIN, options = DEFAULT_CITY_OPTIONS, seed = 'city', include = null, id = 'city' }) {
+  const o = { ...DEFAULT_CITY_OPTIONS, ...options };
+  const keep = include ?? (() => true);
+  const rng = createRng(seed);
+  const styleRng = rng.fork('style');
+  const propRng = rng.fork('props');
+  const treeRng = rng.fork('trees');
+  // Boxes are collected in a private world (tree placement and rooftop props query it).
+  const collision = new CityCollisionWorld({ cellSize: o.collisionCellSize });
+
+  const projectRings = (rings) => {
+    const out = [];
+    for (let i = 0; i < rings.length; i++) {
+      const r = cleanRing(proj.projectFlat(rings[i]));
+      if (r) out.push(r);
+      else if (i === 0) return null;
+    }
+    return orientRings(out);
+  };
+
+  // Buildings --------------------------------------------------------------------------------
+  const buildings = [];
+  const solar = [];
+  const ac = [];
+  let heightFromOsm = 0;
+
+  for (const src of osm.buildings ?? []) {
+    const rings = projectRings(src.rings);
+    if (!rings) continue;
+    const area = footprintArea(rings);
+    if (area < 2) continue;
+    const centroid = ringCentroid(rings[0]);
+    if (!keep('building', centroid.x, centroid.z)) continue;
+    const tags = src.tags ?? {};
+    const h = resolveHeight(tags, area, src.id, o);
+    if (h.source !== 'default') heightFromOsm++;
+
+    const box = ringsBounds(rings);
+    const canopy = h.kind === 'canopy';
+    // Seat the building on the terrain: floors count from the lowest ground point, the roof
+    // line from the highest (so the downhill side shows an extra, partly exposed storey,
+    // as on Jerusalem's slopes), and the walls continue below ground as a foundation.
+    const ground = footprintGround(terrain, rings, centroid);
+    const bottomY = canopy ? ground.max + h.base : ground.min - o.foundationDepth;
+    const topY = canopy ? ground.max + h.top : ground.max + h.top;
+    const stone = mixHex(styleRng.pick(STONE), styleRng.pick(STONE), styleRng.next());
+    const shop = tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
+    const street = tags['addr:street'];
+    const roof = !canopy && PITCHED_ROOFS.has(tags['roof:shape']) && area <= o.tileRoofMaxArea && h.floors <= o.tileRoofMaxFloors
+      ? hipRoof(rings[0], area, topY, o, styleRng)
+      : null;
+    const building = {
+      id: `OSM-${src.id}`,
+      osmId: src.id,
+      kind: h.kind,
+      type: tags.building,
+      name: tags['name:en'] ?? tags.name ?? null,
+      address: street ? `${tags['addr:housenumber'] ? `${tags['addr:housenumber']} ` : ''}${street}` : null,
+      floors: h.floors,
+      base: bottomY, // world Y of the bottom of the walls
+      height: topY, // world Y of the roof (eaves for tile roofs)
+      groundY: ground.min,
+      heightAboveGround: topY - ground.min,
+      heightSource: h.source,
+      // Jerusalem roofs are overwhelmingly flat; a pitched-roof tag on a large building is
+      // treated as flat (with rooftop equipment) rather than trusted.
+      flatRoof: !roof,
+      roof,
+      rings,
+      area,
+      centroid,
+      bounds: box,
+      color: canopy ? COLORS.canopy : stone,
+      // Facade shader inputs: (random seed, window density, ground-floor shops, ground-floor Y).
+      facade: [styleRng.next(), canopy || h.floors < 1 ? 0 : SMALL_TYPES.has(tags.building) ? 0.3 : 1, canopy ? 0 : shop, ground.min],
+      boxes: decomposeFootprint(rings, { step: o.collisionStep }),
+    };
+    buildings.push(building);
+    for (const b of building.boxes) {
+      collision.add({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, minY: bottomY, maxY: topY, kind: 'building', ref: building.id });
+    }
+    if (roof) {
+      // Two stepped tiers approximate the roof volume, so you can stand on it but not walk through it.
+      for (const tier of roof.tiers) {
+        for (const b of decomposeFootprint([tier.ring], { step: 1 })) {
+          collision.add({ ...b, minY: tier.minY, maxY: tier.maxY, kind: 'building', ref: building.id });
+        }
+      }
+    }
+    if (!canopy && building.flatRoof && area >= o.minPropRoofArea && h.top >= 5) {
+      placeRoofProps(building, propRng, o, solar, ac, collision);
+    }
+  }
+
+  // Roads ------------------------------------------------------------------------------------
+  const roads = [];
+  const roadGrid = new Map();
+  const index = (minX, minZ, maxX, maxZ, entry) => {
+    for (let ix = Math.floor(minX / ROAD_CELL); ix <= Math.floor(maxX / ROAD_CELL); ix++) {
+      for (let iz = Math.floor(minZ / ROAD_CELL); iz <= Math.floor(maxZ / ROAD_CELL); iz++) {
+        const k = `${ix},${iz}`;
+        let list = roadGrid.get(k);
+        if (!list) roadGrid.set(k, (list = []));
+        list.push(entry);
+      }
+    }
+  };
+
+  for (const src of osm.roads ?? []) {
+    const pts = proj.projectFlat(src.points);
+    if (pts.length < 4) continue;
+    const mid = polylineMidpoint(pts);
+    if (!keep('road', mid.x, mid.z)) continue;
+    const width = roadWidth(src);
+    const road = {
+      id: `OSM-${src.id}`,
+      name: src.nameEn ?? src.name ?? null,
+      nameLocal: src.name ?? null,
+      highway: src.highway,
+      surface: ASPHALT.has(src.highway) ? 'asphalt' : 'paving',
+      major: MAJOR.has(src.highway),
+      width,
+      points: pts,
+    };
+    const ri = roads.push(road) - 1;
+    const hw = width / 2;
+    for (let i = 0; i + 3 < pts.length; i += 2) {
+      index(Math.min(pts[i], pts[i + 2]) - hw, Math.min(pts[i + 1], pts[i + 3]) - hw, Math.max(pts[i], pts[i + 2]) + hw, Math.max(pts[i + 1], pts[i + 3]) + hw, [ri, i]);
+    }
+  }
+  for (const src of osm.roadAreas ?? []) {
+    const rings = projectRings(src.rings);
+    if (!rings) continue;
+    const c = ringCentroid(rings[0]);
+    if (!keep('roadArea', c.x, c.z)) continue;
+    const road = {
+      id: `OSM-${src.id}`,
+      name: src.nameEn ?? src.name ?? null,
+      nameLocal: src.name ?? null,
+      highway: src.highway,
+      surface: ASPHALT.has(src.highway) ? 'asphalt' : 'paving',
+      major: MAJOR.has(src.highway),
+      width: 0,
+      rings,
+    };
+    const ri = roads.push(road) - 1;
+    const b = ringsBounds(rings);
+    index(b.minX, b.minZ, b.maxX, b.maxZ, [ri, -1]);
+  }
+
+  // Parks, trees, place labels ----------------------------------------------------------------
+  const parks = [];
+  for (const src of osm.parks ?? []) {
+    const rings = projectRings(src.rings);
+    if (!rings) continue;
+    const c = ringCentroid(rings[0]);
+    if (keep('park', c.x, c.z)) parks.push({ id: `OSM-${src.id}`, kind: src.kind, name: src.name, rings });
+  }
+
+  const trees = [];
+  const treeCoords = osm.trees ?? [];
+  for (let i = 0; i + 1 < treeCoords.length; i += 2) {
+    const { x, z } = proj.project(treeCoords[i], treeCoords[i + 1]);
+    if (!keep('tree', x, z)) continue;
+    if (collision.queryPoint(x, terrain.heightAt(x, z) + 1, z).some((b) => b.kind === 'building')) continue;
+    const tree = {
+      x, z, y: terrain.heightAt(x, z),
+      trunkHeight: treeRng.range(2.2, 3.6),
+      trunkRadius: treeRng.range(0.16, 0.26),
+      crownRadius: treeRng.range(1.8, 3.2),
+      color: treeRng.pick(COLORS.crown),
+    };
+    trees.push(tree);
+    collision.add({
+      minX: x - tree.trunkRadius, maxX: x + tree.trunkRadius, minZ: z - tree.trunkRadius, maxZ: z + tree.trunkRadius,
+      minY: tree.y, maxY: tree.y + tree.trunkHeight + tree.crownRadius, kind: 'tree', ref: null,
+    });
+  }
+
+  const places = (osm.places ?? []).map((p) => ({ ...proj.project(p.lat, p.lon), id: p.id, name: p.nameEn ?? p.name, nameLocal: p.name, place: p.place }));
+
+  // Extent of everything in the chunk (buildings, roads, parks), for culling and lookups.
+  const bounds = { minX: Infinity, minZ: Infinity, maxX: -Infinity, maxZ: -Infinity };
+  const grow = (b) => {
+    bounds.minX = Math.min(bounds.minX, b.minX); bounds.maxX = Math.max(bounds.maxX, b.maxX);
+    bounds.minZ = Math.min(bounds.minZ, b.minZ); bounds.maxZ = Math.max(bounds.maxZ, b.maxZ);
+  };
+  for (const b of buildings) grow(b.bounds);
+  for (const r of roads) {
+    if (r.rings) grow(ringsBounds(r.rings));
+    else {
+      const hw = r.width / 2 + CURB_WIDTH;
+      const rb = ringsBounds([r.points]);
+      grow({ minX: rb.minX - hw, maxX: rb.maxX + hw, minZ: rb.minZ - hw, maxZ: rb.maxZ + hw });
+    }
+  }
+  for (const pk of parks) grow(ringsBounds(pk.rings));
+
+  return {
+    id,
+    buildings,
+    buildingById: new Map(buildings.map((b) => [b.id, b])),
+    roads,
+    roadGrid,
+    parks,
+    trees,
+    places,
+    roofProps: { solar, ac },
+    boxes: collision.boxes.filter(Boolean),
+    bounds,
+    stats: {
+      buildings: buildings.length,
+      buildingsWithOsmHeight: heightFromOsm,
+      canopies: buildings.filter((b) => b.kind === 'canopy').length,
+      tileRoofs: buildings.filter((b) => b.roof).length,
+      tallest: buildings.reduce((mx, b) => Math.max(mx, b.heightAboveGround), 0),
+      roads: roads.length,
+      parks: parks.length,
+      trees: trees.length,
+      solarHeaters: solar.length,
+      acUnits: ac.length,
+      colliders: collision.count,
+    },
+  };
+}
+
+/** Point halfway along a flat [x, z, ...] polyline (by length). */
+export function polylineMidpoint(pts) {
+  let total = 0;
+  for (let i = 0; i + 3 < pts.length; i += 2) total += Math.hypot(pts[i + 2] - pts[i], pts[i + 3] - pts[i + 1]);
+  let half = total / 2;
+  for (let i = 0; i + 3 < pts.length; i += 2) {
+    const len = Math.hypot(pts[i + 2] - pts[i], pts[i + 3] - pts[i + 1]);
+    if (len >= half && len > 0) {
+      const t = half / len;
+      return { x: pts[i] + (pts[i + 2] - pts[i]) * t, z: pts[i + 1] + (pts[i + 3] - pts[i + 1]) * t };
+    }
+    half -= len;
+  }
+  return { x: pts[0], z: pts[1] };
+}
+
 export class CityGenerator {
   /** @param {Partial<typeof DEFAULT_CITY_OPTIONS>} [options] */
   constructor(options = {}) {
@@ -225,177 +481,17 @@ export class CityGenerator {
     const osm = o.osm;
     const proj = createProjection(osm.bbox);
     const bounds = proj.bounds;
-    const rng = createRng(o.seed);
-    const styleRng = rng.fork('style');
-    const propRng = rng.fork('props');
-    const treeRng = rng.fork('trees');
     const terrain = o.elevation ? createTerrain(o.elevation, proj) : FLAT_TERRAIN;
     const collision = new CityCollisionWorld({ cellSize: o.collisionCellSize, groundHeightAt: terrain.flat ? null : terrain.heightAt });
-
-    const projectRings = (rings) => {
-      const out = [];
-      for (let i = 0; i < rings.length; i++) {
-        const r = cleanRing(proj.projectFlat(rings[i]));
-        if (r) out.push(r);
-        else if (i === 0) return null;
-      }
-      return orientRings(out);
-    };
-
-    // Buildings ------------------------------------------------------------------------------
-    const buildings = [];
-    const solar = [];
-    const ac = [];
-    let heightFromOsm = 0;
-
-    for (const src of osm.buildings) {
-      const rings = projectRings(src.rings);
-      if (!rings) continue;
-      const area = footprintArea(rings);
-      if (area < 2) continue;
-      const tags = src.tags ?? {};
-      const h = resolveHeight(tags, area, src.id, o);
-      if (h.source !== 'default') heightFromOsm++;
-
-      const box = ringsBounds(rings);
-      const centroid = ringCentroid(rings[0]);
-      const canopy = h.kind === 'canopy';
-      // Seat the building on the terrain: floors count from the lowest ground point, the roof
-      // line from the highest (so the downhill side shows an extra, partly exposed storey,
-      // as on Jerusalem's slopes), and the walls continue below ground as a foundation.
-      const ground = footprintGround(terrain, rings, centroid);
-      const bottomY = canopy ? ground.max + h.base : ground.min - o.foundationDepth;
-      const topY = canopy ? ground.max + h.top : ground.max + h.top;
-      const stone = mixHex(styleRng.pick(STONE), styleRng.pick(STONE), styleRng.next());
-      const shop = tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
-      const street = tags['addr:street'];
-      const roof = !canopy && PITCHED_ROOFS.has(tags['roof:shape']) && area <= o.tileRoofMaxArea && h.floors <= o.tileRoofMaxFloors
-        ? hipRoof(rings[0], area, topY, o, styleRng)
-        : null;
-      const building = {
-        id: `OSM-${src.id}`,
-        osmId: src.id,
-        kind: h.kind,
-        type: tags.building,
-        name: tags['name:en'] ?? tags.name ?? null,
-        address: street ? `${tags['addr:housenumber'] ? `${tags['addr:housenumber']} ` : ''}${street}` : null,
-        floors: h.floors,
-        base: bottomY, // world Y of the bottom of the walls
-        height: topY, // world Y of the roof (eaves for tile roofs)
-        groundY: ground.min,
-        heightAboveGround: topY - ground.min,
-        heightSource: h.source,
-        // Jerusalem roofs are overwhelmingly flat; a pitched-roof tag on a large building is
-        // treated as flat (with rooftop equipment) rather than trusted.
-        flatRoof: !roof,
-        roof,
-        rings,
-        area,
-        centroid,
-        bounds: box,
-        color: canopy ? COLORS.canopy : stone,
-        // Facade shader inputs: (random seed, window density, ground-floor shops, ground-floor Y).
-        facade: [styleRng.next(), canopy || h.floors < 1 ? 0 : SMALL_TYPES.has(tags.building) ? 0.3 : 1, canopy ? 0 : shop, ground.min],
-        boxes: decomposeFootprint(rings, { step: o.collisionStep }),
-      };
-      buildings.push(building);
-      for (const b of building.boxes) {
-        collision.add({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, minY: bottomY, maxY: topY, kind: 'building', ref: building.id });
-      }
-      if (roof) {
-        // Two stepped tiers approximate the roof volume, so you can stand on it but not walk through it.
-        for (const tier of roof.tiers) {
-          for (const b of decomposeFootprint([tier.ring], { step: 1 })) {
-            collision.add({ ...b, minY: tier.minY, maxY: tier.maxY, kind: 'building', ref: building.id });
-          }
-        }
-      }
-      if (!canopy && building.flatRoof && area >= o.minPropRoofArea && h.top >= 5) {
-        placeRoofProps(building, propRng, o, solar, ac, collision);
-      }
-    }
-
-    // Roads ----------------------------------------------------------------------------------
-    const roads = [];
-    const roadGrid = new Map();
-    const index = (minX, minZ, maxX, maxZ, entry) => {
-      for (let ix = Math.floor(minX / ROAD_CELL); ix <= Math.floor(maxX / ROAD_CELL); ix++) {
-        for (let iz = Math.floor(minZ / ROAD_CELL); iz <= Math.floor(maxZ / ROAD_CELL); iz++) {
-          const k = `${ix},${iz}`;
-          let list = roadGrid.get(k);
-          if (!list) roadGrid.set(k, (list = []));
-          list.push(entry);
-        }
-      }
-    };
-
-    for (const src of osm.roads ?? []) {
-      const pts = proj.projectFlat(src.points);
-      if (pts.length < 4) continue;
-      const width = roadWidth(src);
-      const road = {
-        id: `OSM-${src.id}`,
-        name: src.nameEn ?? src.name ?? null,
-        nameLocal: src.name ?? null,
-        highway: src.highway,
-        surface: ASPHALT.has(src.highway) ? 'asphalt' : 'paving',
-        major: MAJOR.has(src.highway),
-        width,
-        points: pts,
-      };
-      const ri = roads.push(road) - 1;
-      const hw = width / 2;
-      for (let i = 0; i + 3 < pts.length; i += 2) {
-        index(Math.min(pts[i], pts[i + 2]) - hw, Math.min(pts[i + 1], pts[i + 3]) - hw, Math.max(pts[i], pts[i + 2]) + hw, Math.max(pts[i + 1], pts[i + 3]) + hw, [ri, i]);
-      }
-    }
-    for (const src of osm.roadAreas ?? []) {
-      const rings = projectRings(src.rings);
-      if (!rings) continue;
-      const road = {
-        id: `OSM-${src.id}`,
-        name: src.nameEn ?? src.name ?? null,
-        nameLocal: src.name ?? null,
-        highway: src.highway,
-        surface: ASPHALT.has(src.highway) ? 'asphalt' : 'paving',
-        major: MAJOR.has(src.highway),
-        width: 0,
-        rings,
-      };
-      const ri = roads.push(road) - 1;
-      const b = ringsBounds(rings);
-      index(b.minX, b.minZ, b.maxX, b.maxZ, [ri, -1]);
-    }
-
-    // Parks, trees, place labels --------------------------------------------------------------
-    const parks = [];
-    for (const src of osm.parks ?? []) {
-      const rings = projectRings(src.rings);
-      if (rings) parks.push({ id: `OSM-${src.id}`, kind: src.kind, name: src.name, rings });
-    }
-
-    const trees = [];
     const m = o.groundMargin;
-    const treeCoords = osm.trees ?? [];
-    for (let i = 0; i + 1 < treeCoords.length; i += 2) {
-      const { x, z } = proj.project(treeCoords[i], treeCoords[i + 1]);
-      if (x < bounds.minX - m || x > bounds.maxX + m || z < bounds.minZ - m || z > bounds.maxZ + m) continue;
-      if (collision.queryPoint(x, terrain.heightAt(x, z) + 1, z).some((b) => b.kind === 'building')) continue;
-      const tree = {
-        x, z, y: terrain.heightAt(x, z),
-        trunkHeight: treeRng.range(2.2, 3.6),
-        trunkRadius: treeRng.range(0.16, 0.26),
-        crownRadius: treeRng.range(1.8, 3.2),
-        color: treeRng.pick(COLORS.crown),
-      };
-      trees.push(tree);
-      collision.add({
-        minX: x - tree.trunkRadius, maxX: x + tree.trunkRadius, minZ: z - tree.trunkRadius, maxZ: z + tree.trunkRadius,
-        minY: tree.y, maxY: tree.y + tree.trunkHeight + tree.crownRadius, kind: 'tree', ref: null,
-      });
-    }
-
-    const places = (osm.places ?? []).map((p) => ({ ...proj.project(p.lat, p.lon), name: p.nameEn ?? p.name, nameLocal: p.name, place: p.place }));
+    const chunk = generateCityChunk(osm, {
+      projection: proj,
+      terrain,
+      options: o,
+      seed: o.seed,
+      include: (kind, x, z) => kind !== 'tree' || (x >= bounds.minX - m && x <= bounds.maxX + m && z >= bounds.minZ - m && z <= bounds.maxZ + m),
+    });
+    for (const box of chunk.boxes) collision.add(box);
 
     const data = {
       seed: o.seed,
@@ -405,29 +501,13 @@ export class CityGenerator {
       projection: proj,
       terrain,
       bounds,
-      buildings,
-      buildingById: new Map(buildings.map((b) => [b.id, b])),
-      roads,
-      roadGrid,
-      parks,
-      trees,
-      places,
-      roofProps: { solar, ac },
+      ...chunk,
       collision,
       spawn: null,
       stats: {
-        buildings: buildings.length,
-        buildingsWithOsmHeight: heightFromOsm,
-        canopies: buildings.filter((b) => b.kind === 'canopy').length,
-        tileRoofs: buildings.filter((b) => b.roof).length,
-        tallest: buildings.reduce((mx, b) => Math.max(mx, b.heightAboveGround), 0),
+        ...chunk.stats,
         terrain: terrain.flat ? 'flat' : `${terrain.datum.toFixed(0)}–${(terrain.datum + terrain.maxHeight).toFixed(0)} m ASL`,
-        roads: roads.length,
-        parks: parks.length,
-        trees: trees.length,
-        solarHeaters: solar.length,
-        acUnits: ac.length,
-        colliders: collision.boxes.length,
+        colliders: collision.count,
       },
     };
     data.spawn = findSpawn(data);
@@ -928,12 +1008,26 @@ function ribbonGeometry(points, hw, y) {
 
 const CURB_WIDTH = 0.3;
 
-/** Regular grid over `rect` following the terrain (+ yOffset), with smooth terrain normals. */
-function terrainGeometry(terrain, rect, spacing, yOffset) {
+/**
+ * Regular grid over `rect` following the terrain (+ yOffset), with smooth terrain normals.
+ * With `skirt` > 0 each edge also gets a strip hanging `skirt` meters straight down, which
+ * hides the cracks where neighbouring grids of different resolution meet.
+ */
+export function terrainGeometry(terrain, rect, spacing, yOffset = 0, skirt = 0) {
   const nx = Math.max(1, Math.round((rect.maxX - rect.minX) / spacing));
   const nz = Math.max(1, Math.round((rect.maxZ - rect.minZ) / spacing));
   const sx = (rect.maxX - rect.minX) / nx, sz = (rect.maxZ - rect.minZ) / nz;
-  const pos = new Float32Array((nx + 1) * (nz + 1) * 3);
+  const gridVerts = (nx + 1) * (nz + 1);
+  // Perimeter, counter-clockwise seen from above: south edge (z = max) west->east, then east, north, west.
+  const perimeter = [];
+  if (skirt > 0) {
+    for (let i = 0; i < nx; i++) perimeter.push(nz * (nx + 1) + i);
+    for (let j = nz; j > 0; j--) perimeter.push(j * (nx + 1) + nx);
+    for (let i = nx; i > 0; i--) perimeter.push(i);
+    for (let j = 0; j < nz; j++) perimeter.push(j * (nx + 1));
+  }
+  const totalVerts = gridVerts + perimeter.length;
+  const pos = new Float32Array(totalVerts * 3);
   const nrm = new Float32Array(pos.length);
   for (let j = 0, k = 0; j <= nz; j++) {
     for (let i = 0; i <= nx; i++, k += 3) {
@@ -945,13 +1039,29 @@ function terrainGeometry(terrain, rect, spacing, yOffset) {
       nrm[k] = n[0]; nrm[k + 1] = n[1]; nrm[k + 2] = n[2];
     }
   }
-  const index = new (pos.length / 3 > 65535 ? Uint32Array : Uint16Array)(nx * nz * 6);
-  for (let j = 0, k = 0; j < nz; j++) {
+  // Skirt vertices: copies of the perimeter, lowered (same normal, so they shade like the ground).
+  perimeter.forEach((v, p) => {
+    const k = (gridVerts + p) * 3;
+    pos[k] = pos[v * 3]; pos[k + 1] = pos[v * 3 + 1] - skirt; pos[k + 2] = pos[v * 3 + 2];
+    nrm[k] = nrm[v * 3]; nrm[k + 1] = nrm[v * 3 + 1]; nrm[k + 2] = nrm[v * 3 + 2];
+  });
+  const index = new (totalVerts > 65535 ? Uint32Array : Uint16Array)(nx * nz * 6 + perimeter.length * 12);
+  let k = 0;
+  for (let j = 0; j < nz; j++) {
     for (let i = 0; i < nx; i++, k += 6) {
       const a = j * (nx + 1) + i, b = a + 1, c = a + nx + 1, d = c + 1;
       index[k] = a; index[k + 1] = c; index[k + 2] = b; // counter-clockwise seen from above
       index[k + 3] = b; index[k + 4] = c; index[k + 5] = d;
     }
+  }
+  for (let p = 0; p < perimeter.length; p++, k += 12) {
+    const a = perimeter[p], b = perimeter[(p + 1) % perimeter.length];
+    const a2 = gridVerts + p, b2 = gridVerts + ((p + 1) % perimeter.length);
+    // Both windings: the strip is seen from either side depending on which neighbour is lower.
+    index[k] = a; index[k + 1] = a2; index[k + 2] = b;
+    index[k + 3] = b; index[k + 4] = a2; index[k + 5] = b2;
+    index[k + 6] = a; index[k + 7] = b; index[k + 8] = a2;
+    index[k + 9] = b; index[k + 10] = b2; index[k + 11] = a2;
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -1152,6 +1262,22 @@ float cityFbm(vec2 p) {
 float cityBox(vec2 p, vec2 h, float aa) {
   vec2 m = 1.0 - smoothstep(-aa, aa, abs(p) - h);
   return m.x * m.y;
+}
+// Street lamps jittered on a 30 m grid (70% lit): bulbs plus soft light pools, summed over the
+// neighbouring cells so pools are round. Far away (aa = meters per pixel) it fades to the average.
+float cityLamps(vec2 p, float aa) {
+  vec2 base = floor(p / 30.0);
+  float light = 0.0;
+  for (int dy = -1; dy <= 1; dy++) {
+    for (int dx = -1; dx <= 1; dx++) {
+      vec2 c = base + vec2(float(dx), float(dy));
+      if (cityHash(vec3(c, 3.0)) < 0.3) continue;
+      vec2 lamp = (c + 0.2 + 0.6 * vec2(cityHash(vec3(c, 1.0)), cityHash(vec3(c, 2.0)))) * 30.0;
+      float d = length(p - lamp);
+      light += 4.0 * (1.0 - smoothstep(0.5, 0.5 + aa * 1.5, d)) + 0.45 * exp(-d * d / 110.0);
+    }
+  }
+  return mix(light, 0.15, smoothstep(1.0, 6.0, aa));
 }`;
 
 // Bevel profile: tilt of a stone face toward the nearest joint (d0 / d1 = distance to each
@@ -1419,15 +1545,7 @@ function createOuterGroundMaterial(uniforms, bounds) {
   vec2 p = vOuterPos.xz;
   vec2 out2 = max(max(uArea.xy - p, p - uArea.zw), 0.0);
   float outside = smoothstep(20.0, 120.0, length(out2));
-  vec2 cell = floor(p / 30.0);
-  vec2 lamp = (cell + 0.2 + 0.6 * vec2(cityHash(vec3(cell, 1.0)), cityHash(vec3(cell, 2.0)))) * 30.0;
-  float on = step(0.3, cityHash(vec3(cell, 3.0)));
-  float d = length(p - lamp);
-  float aa = length(fwidth(p));
-  float bulb = 1.0 - smoothstep(0.5, 0.5 + aa * 1.5, d);
-  float pool = exp(-d * d / 90.0);
-  float near = bulb * 4.0 + pool * 0.6;
-  float glow = mix(near * on, 0.15, smoothstep(1.0, 6.0, aa)); // far away: average glow
+  float glow = cityLamps(p, length(fwidth(p)));
   float district = 0.6 + 0.4 * cityNoise(p / 400.0);
   totalEmissiveRadiance += vec3(1.0, 0.55, 0.22) * uNight * outside * district * (glow * 0.35 + 0.02);
 }`,
@@ -1522,4 +1640,235 @@ normal = normalize(normal + normalize((viewMatrix * vec4(1.0, 0.0, 0.0, 0.0)).xy
       );
   };
   return mat;
+}
+
+// -----------------------------------------------------------------------------------------------
+// Streaming building blocks (used by src/world/TileWorld.js)
+// -----------------------------------------------------------------------------------------------
+
+/**
+ * Materials and geometries shared by every city chunk, created once: each shader compiles
+ * once, CSM is set up once, and all chunks follow the same day/night uniforms.
+ */
+export function createCityMaterials(uniforms, options = {}) {
+  const o = { ...DEFAULT_CITY_OPTIONS, ...options };
+  const materials = {
+    stone: createStoneMaterial(uniforms, o.floorHeight),
+    silhouette: new THREE.MeshLambertMaterial({ vertexColors: true }),
+    park: createSurfaceMaterial('grass', COLORS.park, { offset: -3 }),
+    paving: createSurfaceMaterial('paving', COLORS.paving, { offset: -7, uniforms }),
+    curb: createSurfaceMaterial('curb', COLORS.curb, { roughness: 0.85, offset: -11, uniforms }),
+    asphalt: createSurfaceMaterial('asphalt', COLORS.asphalt, { roughness: 0.93, offset: -15, uniforms }),
+    marking: createSurfaceMaterial('marking', COLORS.marking, { roughness: 0.7, offset: -19, uniforms }),
+    solar: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, metalness: 0.25 }),
+    ac: new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.2 }),
+    trunk: new THREE.MeshStandardMaterial({ roughness: 1 }),
+    crown: new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true }),
+  };
+  const geometries = {
+    solar: solarHeaterGeometry(),
+    box: new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0),
+    trunk: new THREE.CylinderGeometry(1, 1, 1, 6).translate(0, 0.5, 0),
+    crown: new THREE.IcosahedronGeometry(1, 1),
+  };
+  return {
+    ...materials,
+    geometries,
+    list: Object.values(materials),
+    dispose() {
+      for (const m of Object.values(materials)) m.dispose();
+      for (const g of Object.values(geometries)) g.dispose();
+    },
+  };
+}
+
+/** A lighter copy of a building for distant levels: simplified outline, optionally no holes / roof. */
+function simplifiedBuilding(b, tolerance, { keepHoles = true, keepRoof = true } = {}) {
+  const outer = simplifyRing(b.rings[0], tolerance);
+  return { ...b, rings: keepHoles ? [outer, ...b.rings.slice(1)] : [outer], roof: keepRoof ? b.roof : null };
+}
+
+/**
+ * Meshes for one chunk of city data at a level of detail:
+ *   near    everything: parks, paving, curbs, asphalt, markings, full buildings (tile roofs,
+ *           facades), rooftop props (tagged userData.detail) and trees
+ *   medium  parks, paving and asphalt; buildings with simplified outlines; no props or trees
+ *   far     building silhouettes only (simplified, no courtyards, flat Lambert material)
+ * Terrain is not part of a chunk (the world draws it once).
+ */
+export function buildCityChunk(chunk, { terrain = FLAT_TERRAIN, materials: M, level = 'near', options = {} }) {
+  const group = new THREE.Group();
+  group.name = `Chunk(${chunk.id}:${level})`;
+  const owned = [];
+  const addMesh = (geo, mat, name, { cast = false, receive = true } = {}) => {
+    owned.push(geo);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = name;
+    mesh.castShadow = cast;
+    mesh.receiveShadow = receive;
+    group.add(mesh);
+    return mesh;
+  };
+  const layer = (name, geometries, material, lift) => {
+    if (!geometries.length) return;
+    const merged = mergeGeometries(geometries, false);
+    for (const g of geometries) g.dispose();
+    const geo = drapeGeometry(merged, terrain, lift, 6);
+    merged.dispose();
+    addMesh(geo, material, name);
+  };
+
+  if (level !== 'far') {
+    layer('Parks', chunk.parks.map((p) => flatPolygonGeometry(p.rings, 0)), M.park, 0.02);
+    const geos = { asphalt: [], paving: [], curb: [], marking: [] };
+    for (const r of chunk.roads) {
+      geos[r.surface].push(r.rings ? flatPolygonGeometry(r.rings, 0) : ribbonGeometry(r.points, r.width / 2, 0));
+      if (level !== 'near' || r.surface !== 'asphalt' || !r.points) continue;
+      geos.curb.push(curbGeometry(r.points, r.width / 2, CURB_WIDTH));
+      if (r.width >= 8) geos.marking.push(dashedLineGeometry(r.points, 0.07, 3, 4));
+    }
+    layer('Paving', geos.paving, M.paving, 0.04);
+    if (level === 'near') layer('Curbs', geos.curb, M.curb, 0.05);
+    layer('Roads', geos.asphalt, M.asphalt, 0.06);
+    if (level === 'near') layer('Markings', geos.marking, M.marking, 0.08);
+  }
+
+  // Buildings, merged into one mesh (one draw call per chunk).
+  const source = level === 'near' ? chunk.buildings
+    : level === 'medium' ? chunk.buildings.map((b) => simplifiedBuilding(b, 1))
+    : chunk.buildings.filter((b) => b.area >= 40 && b.kind === 'building').map((b) => simplifiedBuilding(b, 3, { keepHoles: false, keepRoof: false }));
+  if (source.length) {
+    const parts = source.map((b) => extrudeBuilding(b));
+    const geo = mergeGeometries(parts, false);
+    for (const g of parts) g.dispose();
+    geo.computeBoundingSphere();
+    addMesh(geo, level === 'far' ? M.silhouette : M.stone, 'Buildings', { cast: level !== 'far', receive: level !== 'far' });
+  }
+
+  const detailMeshes = [];
+  if (level === 'near') {
+    const b = chunk.bounds;
+    const origin = { x: b.minX, z: b.minZ, nx: 1, nz: 1 };
+    const inst = (items, opts) => {
+      if (!items.length) return;
+      const { meshes } = buildChunkedInstances(items, { origin, chunkSize: 1e9, castShadow: true, receiveShadow: true, ...opts });
+      for (const mesh of meshes) {
+        group.add(mesh);
+        if (mesh.userData.detail) detailMeshes.push(mesh);
+      }
+    };
+    const { solar, ac } = chunk.roofProps;
+    inst(solar.map((s) => ({ x: s.x, y: s.y, z: s.z, sx: 1, sy: 1, sz: 1, color: 0xffffff })), { name: 'SolarHeaters', geometry: M.geometries.solar, material: M.solar, detail: true });
+    inst(ac.map((a) => ({ x: a.x, y: a.y, z: a.z, sx: a.w, sy: a.h, sz: a.d, ry: a.yaw, color: COLORS.ac })), { name: 'AcUnits', geometry: M.geometries.box, material: M.ac, detail: true });
+    inst(chunk.trees.map((t) => ({ x: t.x, y: t.y, z: t.z, sx: t.trunkRadius, sy: t.trunkHeight + t.crownRadius * 0.5, sz: t.trunkRadius, color: COLORS.trunk })), { name: 'TreeTrunks', geometry: M.geometries.trunk, material: M.trunk, receiveShadow: false });
+    inst(chunk.trees.map((t) => ({ x: t.x, y: t.y + t.trunkHeight + t.crownRadius * 0.6, z: t.z, sx: t.crownRadius, sy: t.crownRadius * 0.85, sz: t.crownRadius, color: t.color })), { name: 'TreeCrowns', geometry: M.geometries.crown, material: M.crown });
+  }
+
+  group.traverse((obj) => {
+    obj.matrixAutoUpdate = false;
+    obj.updateMatrix();
+  });
+  group.updateMatrixWorld(true);
+
+  return {
+    group,
+    level,
+    detailMeshes,
+    dispose() {
+      for (const g of owned) g.dispose();
+      group.traverse((obj) => obj.isInstancedMesh && obj.dispose());
+      group.clear();
+    },
+  };
+}
+
+/**
+ * Ground for a tiled world: stone-slab paving where there is city data, natural hillside
+ * (dry grass, terra rossa, limestone outcrops on slopes) elsewhere, blended by a mask texture
+ * over `maskRect` (minX, minZ, maxX, maxZ). At night the city gets an orange street-light
+ * glow, the rest scattered lamps (the unmapped city is still a city).
+ */
+export function createGroundMaterial(uniforms, { mask, maskRect }) {
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, metalness: 0 });
+  mat.customProgramCacheKey = () => 'world-ground-v1';
+  const paving = new THREE.Color(COLORS.ground);
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uNight = uniforms.uNight;
+    shader.uniforms.uCityMask = { value: mask };
+    shader.uniforms.uMaskRect = { value: new THREE.Vector4(maskRect.minX, maskRect.minZ, maskRect.maxX, maskRect.maxZ) };
+    shader.uniforms.uPaving = { value: paving };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vGPos;\nvarying float vGUp;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vGPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  vGUp = normalize(mat3(modelMatrix) * objectNormal).y;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+varying vec3 vGPos;
+varying float vGUp;
+uniform float uNight;
+uniform sampler2D uCityMask;
+uniform vec4 uMaskRect;
+uniform vec3 uPaving;
+${GLSL_COMMON}
+${GLSL_BEVEL}`)
+      .replace(
+        '#include <color_fragment>',
+        /* glsl */ `#include <color_fragment>
+float groundCity = 0.0;
+vec2 groundBump = vec2(0.0);
+{
+  vec2 p = vGPos.xz;
+  vec2 muv = (p - uMaskRect.xy) / (uMaskRect.zw - uMaskRect.xy);
+  if (muv.x >= 0.0 && muv.y >= 0.0 && muv.x <= 1.0 && muv.y <= 1.0) groundCity = texture2D(uCityMask, muv).r;
+
+  // Paving: 80 x 50 cm slabs in running bond.
+  vec2 cell = vec2(p.x / 0.8, p.y / 0.5);
+  cell.x += 0.5 * mod(floor(cell.y), 2.0);
+  vec2 f = fract(cell);
+  vec2 aa = fwidth(cell) + 1e-4;
+  float fade = smoothstep(0.15, 0.45, max(aa.x, aa.y));
+  vec2 dmin = min(f, 1.0 - f);
+  float joint = max(1.0 - smoothstep(0.012, 0.012 + aa.x, dmin.x), 1.0 - smoothstep(0.018, 0.018 + aa.y, dmin.y));
+  float dirt = cityFbm(p * 0.25);
+  vec3 slab = uPaving * mix(0.95, 1.04, cityHash(vec3(floor(cell), 4.0))) * mix(0.9, 1.02, dirt);
+  vec3 pave = mix(mix(slab, uPaving * 0.82, joint), uPaving * mix(0.93, 1.0, dirt), fade);
+
+  // Hillside: dry grass and terra rossa, limestone showing through on steeper slopes.
+  float n1 = cityFbm(p * 0.012), n2 = cityFbm(p * 0.09 + 7.0), n3 = cityHash(vec3(floor(p * 2.0), 9.0));
+  vec3 grass = vec3(0.26, 0.24, 0.13), earth = vec3(0.33, 0.2, 0.12), rock = vec3(0.44, 0.42, 0.37);
+  vec3 nat = mix(grass, earth, smoothstep(0.4, 0.75, n1));
+  float slope = 1.0 - smoothstep(0.88, 0.97, vGUp);
+  nat = mix(nat, rock, clamp(smoothstep(0.64, 0.82, n2) * 0.3 + slope * 0.7, 0.0, 1.0));
+  nat *= mix(0.9, 1.06, n3 * (1.0 - fade));
+
+  diffuseColor.rgb = mix(nat, pave, groundCity);
+  groundBump = vec2(cityBevel(f.x, 1.0 - f.x, 0.012, 0.05), cityBevel(f.y, 1.0 - f.y, 0.018, 0.07)) * -0.3 * (1.0 - fade) * groundCity;
+}`,
+      )
+      .replace(
+        '#include <normal_fragment_maps>',
+        /* glsl */ `#include <normal_fragment_maps>
+normal = normalize(normal + normalize((viewMatrix * vec4(1.0, 0.0, 0.0, 0.0)).xyz) * groundBump.x + normalize((viewMatrix * vec4(0.0, 0.0, 1.0, 0.0)).xyz) * groundBump.y);`,
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        /* glsl */ `#include <emissivemap_fragment>
+{
+  vec2 p = vGPos.xz;
+  // City: sodium street light on the paving.
+  vec3 sodium = vec3(1.0, 0.55, 0.22);
+  float cityGlow = 0.3 * mix(0.5, 1.0, cityFbm(p / 9.0));
+  // Unmapped areas: scattered lamps (jittered every ~30 m) with orange pools.
+  float lampLight = cityLamps(p, length(fwidth(p))) * (0.6 + 0.4 * cityNoise(p / 400.0));
+  vec3 unmapped = sodium * (lampLight * 0.35 + 0.02);
+  vec3 streets = diffuseColor.rgb * sodium * cityGlow;
+  totalEmissiveRadiance += mix(unmapped, streets, groundCity) * uNight;
+}`,
+      );
+  };
+  return mat;
+}
+
+/** The outer-ground material (land beyond the world), exported for the streaming world. */
+export function createOuterMaterial(uniforms, bounds) {
+  return createOuterGroundMaterial(uniforms, bounds);
 }

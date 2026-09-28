@@ -1,8 +1,8 @@
-// Terrain from the elevation heightmap written by scripts/fetch_elevation.js.
+// Terrain from the elevation data written by scripts/fetch_elevation.js.
 //
-// heightAt(x, z) returns the ground height in game meters (bicubic over the grid). The
-// datum is the lowest sample, so the terrain is always >= 0; add `datum` to get meters
-// above sea level. Outside the heightmap the edge values are extended and, further out,
+// heightAt(x, z) returns the ground height in game meters (bicubic over the grid). By default
+// the datum is the lowest sample, so the terrain is >= 0 (Catmull-Rom may dip marginally
+// below near a minimum); add `datum` to get meters above sea level. Outside the heightmap the edge values are extended and, further out,
 // eased toward the mean edge height, so the landscape doesn't end in a cliff.
 // No three.js dependency.
 
@@ -23,23 +23,41 @@ export const FLAT_TERRAIN = Object.freeze({
 });
 
 /**
- * @param {object} heightmap  JSON with { bbox, width, height, values } (row 0 = north, col 0 = west,
- *                            samples on cell corners, edges inclusive)
+ * Accepts either elevation format written by scripts/fetch_elevation.js:
+ *   heightmap-v1   { bbox, width, height, values }: samples on the bbox corners, edges inclusive
+ *   dem-points-v1  { lattice: {north, west, stepLatDeg, stepLonDeg}, width, height, values }:
+ *                  exact DEM samples at pixel centres (control points, may extend past the bbox)
+ * Both are row-major, row 0 = north, col 0 = west, and are interpolated with Catmull-Rom.
+ *
+ * @param {object} heightmap
  * @param {ReturnType<import('./geo.js').createProjection>} projection
- * @param {{ fadeDistance?: number, bakeSpacing?: number }} [options]
+ * @param {{ fadeDistance?: number, bakeSpacing?: number, datum?: number }} [options]
  *   fadeDistance: distance outside the grid over which heights ease to the mean edge height
- *   bakeSpacing: meters between samples of the pre-baked bicubic surface
+ *   bakeSpacing: meters between samples of the pre-baked bicubic surface (default: grid step / 16, 2–6 m)
+ *   datum: meters above sea level of game y = 0 (default: the lowest sample)
  */
-export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeSpacing = 2 } = {}) {
-  const { width: W, height: H, values, bbox } = heightmap;
+export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeSpacing = null, datum: datumOption = null } = {}) {
+  const { width: W, height: H, values } = heightmap;
   if (!(W >= 2 && H >= 2) || values?.length !== W * H) throw new Error('createTerrain: malformed heightmap');
+  const lattice = heightmap.lattice ?? {
+    north: heightmap.bbox.north,
+    west: heightmap.bbox.west,
+    stepLatDeg: (heightmap.bbox.north - heightmap.bbox.south) / (H - 1),
+    stepLonDeg: (heightmap.bbox.east - heightmap.bbox.west) / (W - 1),
+  };
+  const bbox = {
+    north: lattice.north,
+    west: lattice.west,
+    south: lattice.north - (H - 1) * lattice.stepLatDeg,
+    east: lattice.west + (W - 1) * lattice.stepLonDeg,
+  };
 
   let min = Infinity, max = -Infinity;
   for (const v of values) {
     if (v < min) min = v;
     if (v > max) max = v;
   }
-  const datum = min;
+  const datum = datumOption ?? min;
   const grid = Float32Array.from(values, (v) => v - datum);
 
   let edgeSum = 0, edgeCount = 0;
@@ -50,7 +68,11 @@ export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeS
   // Grid corners in game space (the projection is linear in lat / lon, so the grid is axis-aligned).
   const nw = projection.project(bbox.north, bbox.west);
   const se = projection.project(bbox.south, bbox.east);
-  const x0 = nw.x, z0 = nw.z, dx = (se.x - nw.x) / (W - 1), dz = (se.z - nw.z) / (H - 1);
+  const x0 = nw.x, z0 = nw.z;
+  if (bakeSpacing == null) {
+    const step = Math.min((se.x - nw.x) / (W - 1), (se.z - nw.z) / (H - 1));
+    bakeSpacing = clamp(step / 16, 2, 6);
+  }
 
   // Bicubic (Catmull-Rom) interpolation: the slope is continuous across grid cells, so the
   // ground has no creases along the grid lines (bilinear leaves visible facets).
@@ -97,7 +119,7 @@ export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeS
   return {
     flat: false,
     datum,
-    minHeight: 0,
+    minHeight: min - datum,
     maxHeight: max - datum,
     meanEdge,
     bounds: { minX: x0, maxX: se.x, minZ: z0, maxZ: se.z },

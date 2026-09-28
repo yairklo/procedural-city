@@ -77,12 +77,41 @@ neighbourhood names, and writes a compact pre-parsed JSON (flat `[lat, lon, ...]
 The app then runs fully offline. If Overpass is unreachable, save a response yourself and
 convert it with `node scripts/fetch_jerusalem.js --from raw.json`.
 
-`scripts/fetch_elevation.js` samples a 64 x 64 elevation grid over the same bbox (Open-Meteo /
-Copernicus DEM, falling back to Open-Elevation / SRTM) and smooths it. The current file is
-SRTM, 767–817 m above sea level. It is optional: without it the city is built on flat ground.
+### Tiled world (what the game loads)
 
-**License:** map data © OpenStreetMap contributors, ODbL 1.0. The game must show the
-attribution (the HUD does). The JSON file is a derivative database: if you distribute it
+`public/data/tiles/`:
+
+- `manifest.json` (`tiles-v1`): `worldBBox`, the grid (tile `(i, j)` covers lon
+  `[west + i·dLon, +dLon)`, lat `[south + j·dLat, +dLat)`, i east, j north), the list of tiles
+  that exist, phases and place names.
+- `osm_<i>_<j>.json`: the same format as `jerusalem_data.json`, one per listed tile. Buildings
+  and parks belong to the tile containing their centroid; roads are cut at tile borders.
+- `dem_points.json` (`dem-points-v1`): Copernicus 90 m DEM control points for the whole world
+  (574–833 m), interpolated with Catmull-Rom. It replaces `jerusalem_elevation.json` and
+  `jerusalem_dem_points.json`, which the game no longer reads.
+
+`src/world/TileWorld.js` streams it:
+
+- One projection for everything: `createProjection(manifest.worldBBox)`, with a fixed origin at
+  the world centre. Adding tiles never moves anything.
+- Every grid cell gets its content from, in order: its manifest tile; else the legacy
+  city-centre file (`jerusalem_data.json`), keeping only the features whose centroid (roads:
+  midpoint) falls in that cell; else nothing (terrain only). Legacy features in cells that
+  have a tile are skipped, so there are no duplicates, and a new tile takes over its cell
+  with no code change. A tile listed but missing or broken shows terrain only.
+- Levels by distance from the player (with 120 m hysteresis): near ≤ 500 m (full detail and
+  collision), medium ≤ 1200 m (simplified buildings, roads, no props or collision), far ≤ 2600 m
+  (building silhouettes), otherwise unloaded. Collision boxes are added and removed per cell
+  (`CityCollisionWorld.add(box, group)` / `removeGroup`). City data stays cached; meshes are
+  rebuilt at most one cell per frame.
+- The terrain is always there: one grid per cell (8 / 16 / 32 m by level, with skirts that
+  hide cracks between levels), plus coarse terrain around the world. The ground shader shows
+  paving where there is city data and hillside elsewhere, using a mask texture.
+- Spawn: on Jaffa Road while the legacy data is loaded, otherwise on a street in a loaded tile.
+
+**License:** map data © OpenStreetMap contributors, ODbL 1.0; elevation data as named in
+`dem_points.json` (Copernicus DEM GLO-90 © DLR e.V. / ESA, CC BY 4.0). The game must show
+the attribution (the HUD does). The JSON file is a derivative database: if you distribute it
 (it ships inside the web build), it must stay available under the ODbL. Get legal review
 before a commercial release.
 
@@ -132,6 +161,9 @@ before a commercial release.
   The boxes match the real walls to within `collisionStep / 2` (0.3 m).
 - `src/city/CityCollision.js`: static AABB world on a uniform XZ grid: `queryAABB`,
   `queryPoint`, `groundHeight`, `resolveSphere`, `resolveCapsule`, `raycast`.
+- `src/world/TileWorld.js`: the streamed tiled world (see Tiled world above). The per-cell
+  building blocks live in `CityGenerator.js`: `generateCityChunk` (data), `buildCityChunk`
+  (meshes per level), `createCityMaterials` (shared materials) and `createGroundMaterial`.
 - `src/main.js`: loads the data, then wires the renderer, lights, day/night, the player
   (controller + camera + proxy + effects), keyboard input and the HUD (street,
   neighbourhood, player state and speed, touched building).

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CityGenerator, findRoadsAt, findPlaceAt } from './city/CityGenerator.js';
+import { TileWorld } from './world/TileWorld.js';
 import { createLighting } from './render/lighting.js';
 import { createPostProcessing } from './render/postprocessing.js';
 import { createSurroundings } from './render/surroundings.js';
@@ -45,7 +45,7 @@ function applyLook(t) {
   lighting.setNight(t);
   surroundings.setNight(t);
   post.setNight(t);
-  city?.setNight(t);
+  world?.setNight(t);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -97,58 +97,54 @@ function readInput() {
 // City
 // ------------------------------------------------------------------------------------------------
 
-/** @type {ReturnType<CityGenerator['create']> | null} */
-let city = null;
+/** @type {TileWorld | null} */
+let world = null;
 
-const DATA_URL = `${import.meta.env.BASE_URL}data/jerusalem_data.json`;
-const ELEVATION_URL = `${import.meta.env.BASE_URL}data/jerusalem_elevation.json`;
+const DATA = `${import.meta.env.BASE_URL}data/`;
+const getJson = async (url, { optional = false } = {}) => {
+  const res = await fetch(url).catch((err) => ({ ok: false, status: err.message }));
+  if (res.ok) return res.json();
+  if (optional) return null;
+  throw new Error(`${url}: HTTP ${res.status}`);
+};
 
-async function loadData() {
-  const [res, elev] = await Promise.all([fetch(DATA_URL), fetch(ELEVATION_URL).catch(() => null)]);
-  if (!res.ok) throw new Error(`${DATA_URL}: HTTP ${res.status}. Run "npm run fetch-data" once to download the OpenStreetMap data.`);
-  const osm = await res.json();
-  // Elevation is optional: without it the city is built on flat ground.
-  let elevation = null;
-  if (elev?.ok) elevation = await elev.json().catch(() => null);
-  if (!elevation) console.warn(`[city] no terrain (${ELEVATION_URL}); building on flat ground`);
-  return { osm, elevation };
-}
+async function loadWorld() {
+  const [manifest, dem, legacy] = await Promise.all([
+    getJson(`${DATA}tiles/manifest.json`),
+    getJson(`${DATA}tiles/dem_points.json`),
+    // The old city-centre file stays as a "legacy" source until tiles cover it.
+    getJson(`${DATA}jerusalem_data.json`, { optional: true }),
+  ]);
+  world = new TileWorld({ manifest, dem, legacy, loadTile: (file) => getJson(`${DATA}tiles/${file}`) });
+  scene.add(world.group);
+  lighting.setupMaterial(world.groundMaterial);
+  lighting.setupMaterial(world.outerMaterial);
+  for (const m of world.materials.list) lighting.setupMaterial(m);
+  world.onChunkBuilt = (group) => group.traverse((o) => o.userData.detail && lighting.nearShadowsOnly(o));
+  surroundings.setBaseHeight(world.terrain.meanEdge);
+  world.setNight(night);
 
-function buildCity({ osm, elevation }) {
-  if (city) {
-    scene.remove(city.group);
-    city.group.traverse((o) => o.material && [o.material].flat().forEach((m) => lighting.releaseMaterial(m)));
-    city.dispose();
-  }
-  city = new CityGenerator({ osm, elevation }).create();
-  surroundings.setBaseHeight(city.data.terrain.meanEdge);
-  scene.add(city.group);
-  city.group.traverse((o) => {
-    if (!o.material) return;
-    for (const m of Array.isArray(o.material) ? o.material : [o.material]) lighting.setupMaterial(m);
-    if (o.userData.detail) lighting.nearShadowsOnly(o);
-  });
-  city.setNight(night);
-
-  player = new PlayerController(city.collision, city.data.spawn);
-  playerCamera ??= new PlayerCamera(camera, renderer.domElement, city.collision);
-  playerCamera.setCollision(city.collision);
+  hud.textContent = 'Loading Jerusalem…';
+  const spawn = await world.findSpawn();
+  player = new PlayerController(world.collision, spawn);
+  playerCamera ??= new PlayerCamera(camera, renderer.domElement, world.collision);
+  playerCamera.setCollision(world.collision);
   player.on('land', (e) => e.impact > 12 && console.debug(`[player] hard landing ${e.impact.toFixed(1)} m/s`));
   respawn();
 
   // Handy for debugging from the devtools console.
-  window.city = city;
+  window.world = world;
   window.debug = {
-    camera, playerCamera, player, proxy, scene, renderer, lighting, post,
+    camera, playerCamera, player, proxy, scene, renderer, lighting, post, world,
     setNight: (v) => { night = nightTarget = v; applyLook(v); },
   };
-  console.info(`[city] ${city.data.name}`, city.data.stats);
+  console.info('[world]', world.stats(), `legacy: ${world.legacy ? `${world.legacy.kept} features kept, ${world.legacy.skipped} superseded by tiles` : 'none'}`);
 }
 
 /** Puts the player back on the spawn street, camera behind them looking along the road. */
 function respawn() {
-  if (!city || !player) return;
-  player.reset(city.data.spawn);
+  if (!world || !player) return;
+  player.reset(world.spawn);
   playerCamera.snapTo(player.snapshot());
 }
 
@@ -162,27 +158,26 @@ let hudTimer = 0;
 function updateHud(dt) {
   frames++;
   hudTimer += dt;
-  if (hudTimer < 0.25 || !city || !player) return;
+  if (hudTimer < 0.25 || !world || !player) return;
   const fps = Math.round(frames / hudTimer);
   frames = 0;
   hudTimer = 0;
 
-  const { data } = city;
   const s = player.snapshot();
   const p = s.position;
-  const roads = findRoadsAt(data, p.x, p.z);
-  const place = findPlaceAt(data, p.x, p.z);
+  const roads = world.findRoadsAt(p.x, p.z);
+  const place = world.findPlaceAt(p.x, p.z);
   const named = [...new Set(roads.map((r) => r.name).filter(Boolean))];
   const where = named.length ? named.join(' & ') : roads.length ? `unnamed ${roads[0].highway}` : 'off-street';
   const touching = player.hits.find((b) => b.kind === 'building');
-  const touched = touching ? data.buildingById.get(touching.ref) : null;
+  const touched = touching ? world.buildingById(touching.ref) : null;
   const locked = document.pointerLockElement === renderer.domElement;
 
   const info = renderer.info.render;
   hud.innerHTML =
-    `<strong>${data.name}</strong>${place ? ` <span class="dim">· ${place.name}</span>` : ''}\n` +
+    `<strong>${world.name}</strong>${place ? ` <span class="dim">· ${place.name}</span>` : ''}\n` +
     `${fps} fps · ${info.calls} draw calls/frame (all passes) · ${(info.triangles / 1000).toFixed(0)}k tris\n` +
-    `<span class="dim">at</span> ${where}  <span class="dim">${(p.y + data.terrain.datum).toFixed(0)} m ASL</span>\n` +
+    `<span class="dim">at</span> ${where}  <span class="dim">${(p.y + world.terrain.datum).toFixed(0)} m ASL</span>\n` +
     `<span class="dim">${s.state}</span> ${s.horizontalSpeed.toFixed(1)} m/s` +
     (s.state === 'glide' ? ` · sink ${(-s.velocity.y).toFixed(1)} m/s · pitch ${((s.glidePitch * 180) / Math.PI).toFixed(0)}°` : '') +
     (s.grounded && s.slopeDeg > 1 ? ` · slope ${s.slopeDeg.toFixed(0)}°` : '') + '\n' +
@@ -191,7 +186,8 @@ function updateHud(dt) {
       ? `<span class="dim">WASD move · Shift run · Space jump (hold: higher) · hold Space in the air: glide (W dive · S climb · A/D or mouse steer) · ` +
         `${locked ? 'Esc frees the mouse' : 'click: mouse look'} · wheel zoom · E boost · N night · P post-fx ${post.enabled ? 'on' : 'off'} · R respawn · H hide</span>\n`
       : `<span class="dim">H: controls</span>\n`) +
-    `<span class="dim">${data.source.attribution}${data.terrain.source ? ` · ${data.terrain.source.attribution}` : ''}</span>`;
+    (() => { const w = world.stats(); return `<span class="dim">tiles ${w.levels.near} near · ${w.levels.medium} medium · ${w.levels.far} far · ${w.colliders} colliders${w.loading ? ` · loading ${w.loading}` : ''}</span>\n`; })() +
+    `<span class="dim">${world.attribution}</span>`;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -218,8 +214,7 @@ const bench = params.has('bench') ? createBenchmark({ camera, controls: benchCon
 if (params.has('night')) night = nightTarget = 1;
 
 applyLook(night);
-loadData()
-  .then(buildCity)
+loadWorld()
   .catch((err) => {
     console.error(err);
     hud.textContent = `Could not load city data.\n${err.message}`;
@@ -233,7 +228,7 @@ renderer.setAnimationLoop(() => {
     applyLook(night);
   }
 
-  if (bench && city && !bench.running && !bench.result) bench.start(city.data.spawn);
+  if (bench && player && !bench.running && !bench.result) bench.start(world.spawn);
   const benchFrame = bench?.running ? bench.update() : null;
   if (player) {
     if (!benchFrame) player.update(dt, readInput());
@@ -244,7 +239,10 @@ renderer.setAnimationLoop(() => {
   }
   lighting.update();
   surroundings.update(camera);
-  city?.update(camera);
+  if (world && player) {
+    world.update(benchFrame ? camera.position : player.position);
+    world.updateCamera(camera);
+  }
   renderer.info.reset();
   post.render(dt);
   if (benchFrame) {

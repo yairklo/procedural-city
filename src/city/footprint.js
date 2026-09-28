@@ -230,3 +230,40 @@ export function orientedBox(ring) {
     area: best.area,
   };
 }
+
+/**
+ * Douglas-Peucker simplification of a closed flat ring. Keeps the ring's winding; returns the
+ * original ring when simplifying would leave fewer than 3 points or change the area by > 15%.
+ */
+export function simplifyRing(ring, tolerance) {
+  const n = ring.length / 2;
+  if (n <= 4 || tolerance <= 0) return ring;
+  // Split at the vertex farthest from vertex 0 and simplify both open halves.
+  let far = 0, farD = -1;
+  for (let i = 1; i < n; i++) {
+    const d = Math.hypot(ring[i * 2] - ring[0], ring[i * 2 + 1] - ring[1]);
+    if (d > farD) { farD = d; far = i; }
+  }
+  const keep = new Uint8Array(n);
+  keep[0] = keep[far] = 1;
+  const stack = [[0, far], [far, n]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    const ax = ring[a * 2], az = ring[a * 2 + 1];
+    const bx = ring[(b % n) * 2], bz = ring[(b % n) * 2 + 1];
+    let idx = -1, max = tolerance;
+    for (let i = a + 1; i < b; i++) {
+      const d = segmentDistance(ring[i * 2], ring[i * 2 + 1], ax, az, bx, bz);
+      if (d > max) { max = d; idx = i; }
+    }
+    if (idx >= 0) {
+      keep[idx] = 1;
+      stack.push([a, idx], [idx, b]);
+    }
+  }
+  const out = [];
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(ring[i * 2], ring[i * 2 + 1]);
+  if (out.length < 6) return ring;
+  const a0 = Math.abs(ringArea(ring)), a1 = Math.abs(ringArea(out));
+  return Math.abs(a1 - a0) > 0.15 * a0 ? ring : out;
+}

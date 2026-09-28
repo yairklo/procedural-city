@@ -40,6 +40,45 @@ export class CityCollisionWorld {
     this._stamp = 0;
     this._push = { x: 0, y: 0, z: 0 };
     this._candidates = [];
+    // Streaming: boxes can be added under a group id (e.g. a map tile) and removed together.
+    /** @type {Map<string, number[]>} */
+    this.groups = new Map();
+    this._free = [];
+    this.count = 0;
+  }
+
+  /** Removes every box added with this group id. Returns how many were removed. */
+  removeGroup(group) {
+    const list = this.groups.get(group);
+    if (!list) return 0;
+    const cs = this.cellSize;
+    for (const idx of list) {
+      const b = this.boxes[idx];
+      const ix0 = Math.floor(b.minX / cs), ix1 = Math.floor(b.maxX / cs);
+      const iz0 = Math.floor(b.minZ / cs), iz1 = Math.floor(b.maxZ / cs);
+      for (let ix = ix0; ix <= ix1; ix++) {
+        for (let iz = iz0; iz <= iz1; iz++) {
+          const key = CityCollisionWorld.cellKey(ix, iz);
+          const cell = this.cells.get(key);
+          if (!cell) continue;
+          const at = cell.indexOf(idx);
+          if (at >= 0) {
+            cell[at] = cell[cell.length - 1];
+            cell.pop();
+          }
+          if (!cell.length) this.cells.delete(key);
+        }
+      }
+      this.boxes[idx] = null;
+      this._free.push(idx);
+    }
+    this.groups.delete(group);
+    this.count -= list.length;
+    return list.length;
+  }
+
+  hasGroup(group) {
+    return this.groups.has(group);
   }
 
   static cellKey(ix, iz) {
@@ -48,22 +87,38 @@ export class CityCollisionWorld {
   }
 
   /**
-   * Adds a static box. Returns the stored box.
+   * Adds a static box. Returns the stored box. Boxes added with a `group` id can later be
+   * removed together with removeGroup(group).
    * @param {{minX:number,minY:number,minZ:number,maxX:number,maxY:number,maxZ:number,kind?:string,ref?:string|null}} box
+   * @param {string|null} [group]
    */
-  add(box) {
+  add(box, group = null) {
+    const index = this._free.length ? this._free.pop() : this.boxes.length;
     const b = {
       minX: box.minX, minY: box.minY, minZ: box.minZ,
       maxX: box.maxX, maxY: box.maxY, maxZ: box.maxZ,
       kind: box.kind ?? 'solid',
       ref: box.ref ?? null,
-      index: this.boxes.length,
+      group,
+      index,
     };
     if (!(b.maxX > b.minX && b.maxY > b.minY && b.maxZ > b.minZ)) {
+      if (index !== this.boxes.length) this._free.push(index);
       throw new Error(`CityCollisionWorld.add: degenerate box ${JSON.stringify(box)}`);
     }
-    this.boxes.push(b);
-    this._visited.push(0);
+    if (index === this.boxes.length) {
+      this.boxes.push(b);
+      this._visited.push(0);
+    } else {
+      this.boxes[index] = b;
+      this._visited[index] = 0;
+    }
+    this.count++;
+    if (group != null) {
+      let list = this.groups.get(group);
+      if (!list) this.groups.set(group, (list = []));
+      list.push(index);
+    }
 
     const cs = this.cellSize;
     const ix0 = Math.floor(b.minX / cs), ix1 = Math.floor(b.maxX / cs);
@@ -316,7 +371,7 @@ export class CityCollisionWorld {
   }
 
   stats() {
-    return { boxes: this.boxes.length, cells: this.cells.size, cellSize: this.cellSize };
+    return { boxes: this.count, groups: this.groups.size, cells: this.cells.size, cellSize: this.cellSize };
   }
 }
 

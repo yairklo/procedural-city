@@ -21,7 +21,13 @@ float sNoise(float x) {
   return mix(sHash(vec2(i, 7.0)), sHash(vec2(i + 1.0, 7.0)), f);
 }`;
 
-export function createSurroundings({ scene, center = new THREE.Vector3(), radius = 1800 }) {
+/**
+ * @param {object} o
+ * @param {number} [o.radius]        skyline distance (keep below the camera far plane)
+ * @param {boolean} [o.followCamera] keep the ring centred on the camera (an "at infinity"
+ *                                    backdrop, for worlds larger than the ring)
+ */
+export function createSurroundings({ scene, center = new THREE.Vector3(), radius = 3300, followCamera = true }) {
   const uniforms = {
     uNight: { value: 0 },
     uFogColor: { value: scene.fog?.color ?? new THREE.Color(0xd4cbbb) },
@@ -140,6 +146,10 @@ export function createSurroundings({ scene, center = new THREE.Vector3(), radius
     update(camera) {
       dome.position.copy(camera.position);
       dome.updateMatrixWorld();
+      if (followCamera) {
+        ring.position.x = camera.position.x;
+        ring.position.z = camera.position.z;
+      }
     },
     dispose() {
       scene.remove(ring, dome);
