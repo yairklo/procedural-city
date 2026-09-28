@@ -14,7 +14,7 @@
 //   1. Open-Meteo Elevation API: Copernicus DEM GLO-90 (3 arc-sec, ~90 m), CC BY 4.0
 //   2. Open-Elevation public API: measured 7.5 arc-sec pixels (~230 m), nearest-neighbour
 //
-// --mode points (writes public/data/jerusalem_dem_points.json)
+// --mode points (writes public/data/tiles/dem_points.json over the tiled world's WORLD_BBOX)
 //   The grid mode below oversamples a coarse DEM, so its raw values are flat plateaus with
 //   steps at pixel borders. Points mode instead returns ONE sample per real DEM pixel, taken
 //   at the pixel centre: exact measured heights with no plateaus, meant as control points for
@@ -35,12 +35,13 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { WORLD_BBOX } from './fetch_tiles.js';
 
 export const JERUSALEM_BBOX = Object.freeze({ south: 31.778, west: 35.21, north: 31.788, east: 35.225 });
 
 const DATA_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../public/data');
 const OUT_FILE = resolve(DATA_DIR, 'jerusalem_elevation.json');
-const POINTS_FILE = resolve(DATA_DIR, 'jerusalem_dem_points.json');
+const POINTS_FILE = resolve(DATA_DIR, 'tiles/dem_points.json'); // the terrain the game reads
 const POINTS_MARGIN = 2; // extra pixels on each side of the bbox (cubic interpolation needs 1)
 const ARCSEC = 1 / 3600;
 // Pixel sizes of the DEMs these APIs are known to serve, largest first.
@@ -351,7 +352,7 @@ async function main(argv) {
   const source = arg('--source') ?? 'auto';
   if (!['auto', 'open-meteo', 'open-elevation'].includes(source)) throw new Error('--source must be auto, open-meteo or open-elevation');
   const smooth = Number(arg('--smooth') ?? 2.5);
-  let bbox = JERUSALEM_BBOX;
+  let bbox = mode === 'points' ? WORLD_BBOX : JERUSALEM_BBOX;
   if (arg('--bbox')) {
     const [south, west, north, east] = arg('--bbox').split(',').map(Number);
     if (![south, west, north, east].every(Number.isFinite) || !(north > south && east > west)) throw new Error('--bbox must be south,west,north,east');

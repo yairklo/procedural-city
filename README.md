@@ -5,8 +5,9 @@ bbox `31.778,35.210 – 31.788,35.225`) built from real OpenStreetMap data.
 
 ```bash
 npm install
-npm run fetch-data   # one-time: downloads OSM data to public/data/jerusalem_data.json
-node scripts/fetch_elevation.js   # one-time: terrain heightmap to public/data/jerusalem_elevation.json
+npm run fetch-data   # one-time: downloads OSM data to public/data/jerusalem_data.json (legacy centre)
+node scripts/fetch_tiles.js --phase 1   # one-time: OSM tiles to public/data/tiles/ (rerun to fill gaps)
+node scripts/fetch_elevation.js --mode points   # one-time: terrain to public/data/tiles/dem_points.json
 npm run dev
 npm test             # node:test suite (synthetic data + the real data file when present)
 npm run build
