@@ -209,6 +209,20 @@ The three new materials (glazed tiles, gold leaf and marble panels) are styles o
 shared landmark shader (`materials.js`), so the whole compound is a single mesh. On the
 esplanade, buildings without a mapped height are built at one storey with no shopfronts.
 
+Around the walls, a few rules keep the generic buildings believable:
+
+- A footprint that straddles a platform's retaining wall no longer takes its floor from the
+  foot of the wall and its roof line from the platform (that made 20 m towers along the
+  Temple Mount walls). If the centroid is on the platform, the building stands on it, and a
+  mapped height measured from the foot of the wall loses the drop. If the centroid is off
+  the platform, the building stands below the wall. (`footprintGround` in `terrain.js`.)
+- Tombs, monuments and ruins (Absalom's Tomb, the Monolith of Silwan) are solid stone
+  without windows. Churches, mosques and synagogues are one tall volume with few windows
+  and no shops. (`buildingClass` in `CityGenerator.js`.)
+- Silwan and the City of David, and the Kidron Valley with the Mount of Olives slope, are
+  low-rise areas (2-3 storeys). Their outlines are approximate boxes (`lowRise` in
+  landmarks.json, flagged `approximate`).
+
 Without network access, `node scripts/fetch_landmarks.js --from-tiles` rebuilds `haram`
 from the tile files. Tiles have no nodes and no land-use areas, so in that mode all
 minarets are approximate and the only groves are the mapped gardens.

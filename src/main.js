@@ -188,12 +188,15 @@ let landmarkLayer = null;
 
 /**
  * Unmapped-height buildings: single storey, no shopfronts on the Temple Mount (small
- * fountains, porticoes, offices), 2-3 storeys in the rest of the Old City.
+ * fountains, porticoes, offices), 2-3 storeys in the rest of the Old City and in the
+ * villages around it. The first area containing a building wins.
  */
 function lowRiseAreas(landmarks) {
   const out = [];
   if (landmarks.templeMount) out.push({ ring: landmarks.templeMount.outer[0], floorsMin: 1, floorsMax: 1, shops: false });
   if (landmarks.oldCity) out.push(landmarks.oldCity);
+  // Villages around the Old City (Silwan, the Kidron, At-Tur): 2-3 storey houses.
+  for (const a of landmarks.lowRise ?? []) out.push(a);
   return out;
 }
 

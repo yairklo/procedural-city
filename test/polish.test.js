@@ -45,3 +45,16 @@ test('awnings: over street-facing shop bays only, on the facade shader grid', ()
   // A street climbing over the shop floor: no awnings.
   assert.equal(generateAwnings({ buildings: [b], roadsAt, ground: () => 6, rng: createRng('aw'), share: 1 }).length, 0);
 });
+
+test('building classes: tombs and monuments are solid stone, churches and mosques one tall volume', async () => {
+  const { buildingClass, resolveHeight } = await import('../src/city/CityGenerator.js');
+  assert.equal(buildingClass({ building: 'yes', name: 'יד אבשלום', 'name:en': 'Tomb of Absalom' }), 'monument');
+  assert.equal(buildingClass({ building: 'yes', 'name:en': 'Monolith of Silwan' }), 'monument');
+  assert.equal(buildingClass({ building: 'ruins' }), 'monument');
+  assert.equal(buildingClass({ building: 'yes', historic: 'archaeological_site' }), 'monument');
+  assert.equal(buildingClass({ building: 'church', 'name:en': 'Church of All Nations' }), 'religious');
+  assert.equal(buildingClass({ building: 'yes', amenity: 'place_of_worship' }), 'religious');
+  assert.equal(buildingClass({ building: 'yes' }), 'ordinary');
+  assert.equal(resolveHeight({ building: 'yes', 'name:en': 'Tomb of Zacharias' }, 60, 'w1').floors, 2);
+  assert.equal(resolveHeight({ building: 'church' }, 400, 'w2').floors, 3);
+});

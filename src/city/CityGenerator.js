@@ -117,6 +117,21 @@ const MAJOR = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 
 export const MAJOR_HIGHWAYS = MAJOR;
 
 const SMALL_TYPES = new Set(['kiosk', 'shed', 'garage', 'garages', 'hut', 'cabin', 'toilets', 'service', 'transformer_tower', 'container', 'guardhouse']);
+const RELIGIOUS_TYPES = new Set(['church', 'cathedral', 'chapel', 'mosque', 'synagogue', 'religious', 'temple', 'shrine', 'monastery', 'convent']);
+const MONUMENT_TYPES = new Set(['ruins', 'tomb', 'monument', 'mausoleum']);
+const MONUMENT_HISTORIC = new Set(['tomb', 'monument', 'memorial', 'archaeological_site', 'ruins', 'wayside_shrine']);
+
+/**
+ * What a building is, for its massing and facade: 'monument' (ancient tombs, monuments,
+ * ruins: solid stone, no windows), 'religious' (churches, mosques, synagogues: few windows,
+ * no shops), else 'ordinary'.
+ */
+export function buildingClass(tags) {
+  const name = `${tags['name:en'] ?? ''} ${tags.name ?? ''}`;
+  if (MONUMENT_TYPES.has(tags.building) || tags.ruins === 'yes' || MONUMENT_HISTORIC.has(tags.historic) || /\b(Tomb|Monolith|Mausoleum)\b|קבר|יד אבשלום/i.test(name)) return 'monument';
+  if (RELIGIOUS_TYPES.has(tags.building) || tags.amenity === 'place_of_worship') return 'religious';
+  return 'ordinary';
+}
 const HOUSE_TYPES = new Set(['house', 'detached', 'semidetached_house', 'bungalow', 'terrace']);
 const CANOPY_TYPES = new Set(['roof', 'canopy', 'carport']);
 const PITCHED_ROOFS = new Set(['hipped', 'gabled', 'pyramidal', 'half-hipped', 'gambrel', 'mansard']);
@@ -160,7 +175,12 @@ export function resolveHeight(tags, area, id, o = DEFAULT_CITY_OPTIONS) {
     source = 'levels';
   } else {
     let lo = o.defaultFloorsMin, hi = o.defaultFloorsMax;
+    const cls = buildingClass(tags);
     if (SMALL_TYPES.has(type) || area < 30) lo = hi = 1;
+    // Tombs and monuments: a single tall-ish stone mass; churches and mosques: one high
+    // volume (nave), not a stack of apartment floors.
+    else if (cls === 'monument') lo = hi = 2;
+    else if (cls === 'religious') lo = hi = 3;
     // Buildings mapped with a pitched roof are mostly the older low-rise houses (Nahlaot, Nahalat Shiva).
     else if (HOUSE_TYPES.has(type) || area < 90 || (PITCHED_ROOFS.has(tags['roof:shape']) && area <= o.tileRoofMaxArea)) { lo = 2; hi = 3; }
     const r = hashString(id) / 4294967296;
@@ -270,10 +290,14 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
     // line from the highest (so the downhill side shows an extra, partly exposed storey,
     // as on Jerusalem's slopes), and the walls continue below ground as a foundation.
     const ground = footprintGround(terrain, rings, centroid);
+    // On a platform, reaching over its retaining wall: a mapped height was measured from the
+    // foot of the wall, so take the drop off (keeping at least two storeys).
+    if (h.source === 'height' && ground.drop > 3 && !canopy) h.top = Math.max(h.base + 2 * o.floorHeight + o.parapet, h.top - ground.drop);
     const bottomY = canopy ? ground.max + h.base : ground.min - o.foundationDepth;
     const topY = canopy ? ground.max + h.top : ground.max + h.top;
     const stone = mixHex(styleRng.pick(STONE), styleRng.pick(STONE), styleRng.next());
-    const shop = area0 && !area0.shops ? 0 : tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
+    const cls = buildingClass(tags);
+    const shop = cls !== 'ordinary' || (area0 && !area0.shops) ? 0 : tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
     const street = tags['addr:street'];
     const roof = !canopy && PITCHED_ROOFS.has(tags['roof:shape']) && area <= o.tileRoofMaxArea && h.floors <= o.tileRoofMaxFloors
       ? hipRoof(rings[0], area, topY, o, styleRng)
@@ -301,7 +325,8 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
       bounds: box,
       color: canopy ? COLORS.canopy : stone,
       // Facade shader inputs: (random seed, window density, ground-floor shops, ground-floor Y).
-      facade: [styleRng.next(), canopy || h.floors < 1 ? 0 : SMALL_TYPES.has(tags.building) ? 0.3 : 1, canopy ? 0 : shop, ground.min],
+      // Window density: none on monuments, sparse on religious buildings and sheds.
+      facade: [styleRng.next(), canopy || h.floors < 1 || cls === 'monument' ? 0 : cls === 'religious' || SMALL_TYPES.has(tags.building) ? 0.3 : 1, canopy ? 0 : shop, ground.min],
       boxes: decomposeFootprint(rings, { step: o.collisionStep }),
     };
     buildings.push(building);

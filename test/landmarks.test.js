@@ -164,3 +164,33 @@ test('landmarks: the roofs of the Dome of the Rock and al-Aqsa face the sky (see
   assert.ok(roofHits >= 15, `${roofHits}/17 samples hit a roof`);
   lm.dispose();
 });
+
+test('landmarks: buildings along the Temple Mount walls do not tower over the esplanade', async () => {
+  const { generateCityChunk } = await import('../src/city/CityGenerator.js');
+  const esplanade = terrain.patches.find((p) => p.name === 'Temple Mount esplanade');
+  const merged = { buildings: [], roads: [], roadAreas: [], parks: [], trees: [], places: [] };
+  for (const t of ['osm_4_2', 'osm_5_2', 'osm_4_1', 'osm_5_1']) {
+    let d;
+    try { d = read(`../public/data/tiles/${t}.json`); } catch { continue; }
+    merged.buildings.push(...d.buildings);
+  }
+  const chunk = generateCityChunk(merged, { projection, terrain, seed: 't', id: 'tm', options: { excludeBuildings: landmarks.replaces } });
+  let near = 0;
+  for (const b of chunk.buildings) {
+    const ring = b.rings[0];
+    let touches = false;
+    for (let i = 0; i < ring.length; i += 2) if (pointInRings(esplanade.rings, ring[i], ring[i + 1]) || distanceToEdges(esplanade.rings, ring[i], ring[i + 1]) < 3) touches = true;
+    const onIt = pointInRings(esplanade.rings, b.centroid.x, b.centroid.z);
+    if (!touches || onIt) continue;
+    // Off the platform, touching it, and standing below its retaining wall (the ground there
+    // is well below the esplanade): at most a storey or so above the esplanade (it used to
+    // take its roof line from the esplanade and rise 20+ m over it). Where the street is
+    // higher than the esplanade (north-west corner) ordinary heights apply.
+    if (b.groundY > esplanade.y - 5 || b.kind === 'canopy') continue;
+    near++;
+    assert.ok(b.height <= esplanade.y + 4, `${b.id} (${b.name ?? b.type}) roof ${(b.height - esplanade.y).toFixed(1)} m above the esplanade`);
+  }
+  assert.ok(near > 0);
+  const museum = chunk.buildings.find((b) => b.osmId === 'w291836691');
+  if (museum) assert.ok(museum.height - esplanade.y < 12, `museum ${(museum.height - esplanade.y).toFixed(1)} m above the esplanade`);
+});

@@ -221,14 +221,44 @@ export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeS
 }
 
 /** Lowest / highest terrain under a footprint (ring vertices plus a few interior samples). */
+//
+// Raised patches (platforms such as the Temple Mount esplanade) end in retaining walls, so a
+// footprint that straddles one must not take its floor from the ground below the wall and
+// its roof line from the platform on top (that made 20 m towers along the walls):
+//   - centroid on a platform: the building stands on it (samples off it count as its level);
+//   - centroid off the platform: the building stands against the wall below it (samples on
+//     the platform are ignored).
+// `drop` (>= 0): for a building on a platform that reaches over its edge, how far the ground
+// falls away outside (mapped heights there are often measured from the foot of the wall).
 export function footprintGround(terrain, rings, centroid) {
-  let lo = Infinity, hi = -Infinity;
+  const raised = (terrain.patches ?? []).filter((p) => p.mode === 'raise');
+  const platformAt = (x, z) => {
+    let best = null;
+    for (const p of raised) {
+      const b = p.bounds;
+      if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ || !pointInRings(p.rings, x, z)) continue;
+      if (!best || p.y > best.y) best = p;
+    }
+    return best;
+  };
+  const home = raised.length ? platformAt(centroid.x, centroid.z) : null;
+  let lo = Infinity, hi = -Infinity, drop = 0;
   const visit = (x, z) => {
-    const h = terrain.heightAt(x, z);
+    let h;
+    if (raised.length) {
+      const p = platformAt(x, z);
+      if (home && !p) drop = Math.max(drop, home.y - terrain.heightAt(x, z));
+      if (home) h = p && p.y >= home.y ? p.y : home.y;
+      else if (p) return;
+      else h = terrain.heightAt(x, z);
+    } else {
+      h = terrain.heightAt(x, z);
+    }
     if (h < lo) lo = h;
     if (h > hi) hi = h;
   };
   for (const r of rings) for (let i = 0; i < r.length; i += 2) visit(r[i], r[i + 1]);
   visit(centroid.x, centroid.z);
-  return { min: lo, max: hi };
+  if (lo === Infinity) lo = hi = terrain.heightAt(centroid.x, centroid.z);
+  return { min: lo, max: hi, drop };
 }

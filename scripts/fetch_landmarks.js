@@ -46,6 +46,16 @@ export const OLD_CITY_BBOX = Object.freeze({ south: 31.77, west: 35.225, north: 
 
 export const ELEVATION = Object.freeze({ esplanade: 740.5, plaza: 740.5 - 19, upperPlatform: 740.5 + 4 });
 
+// Low-rise villages around the Old City: 2-3 storey houses stepped down the slopes, not the
+// modern city's 3-6 storey blocks. OSM (at this detail) has no outlines for them, so these
+// are approximate boxes (lat, lon), flagged as such in the data.
+export const LOW_RISE_AREAS = Object.freeze([
+  { name: 'Silwan and the City of David', approximate: true, floorsMin: 2, floorsMax: 3,
+    ring: [31.7748, 35.2328, 31.7748, 35.2445, 31.7650, 35.2445, 31.7650, 35.2328] },
+  { name: 'Kidron Valley and the Mount of Olives slope (At-Tur, Ras al-Amud)', approximate: true, floorsMin: 2, floorsMax: 3,
+    ring: [31.7840, 35.2378, 31.7840, 35.2530, 31.7650, 35.2530, 31.7650, 35.2445, 31.7748, 35.2445, 31.7748, 35.2378] },
+]);
+
 // The four minarets of the Haram. Where OSM has no minaret node near one, its approximate
 // position is used (next to the gate it is named after; flagged `approximate`).
 export const HARAM_MINARETS = Object.freeze([
@@ -333,6 +343,7 @@ export function extractLandmarks(osm) {
     bbox: { ...OLD_CITY_BBOX },
     elevation: { ...ELEVATION },
     oldCity: { ring: hull, floorsMin: 2, floorsMax: 3 },
+    lowRise: LOW_RISE_AREAS.map((a) => ({ ...a, ring: [...a.ring] })),
     walls,
     crossings,
     wilson,
@@ -368,6 +379,7 @@ async function fromTiles() {
   const { haram, replaces } = extractHaram(features, [], data.templeMount.outer[0], trees);
   const old = new Set([data.haram?.domeOfTheRock?.id, data.haram?.aqsa?.id, data.haram?.domeOfTheChain?.id, ...(data.haram?.arcades ?? []).map((a) => a.id), ...(data.haram?.domes ?? []).map((d) => d.id)]);
   data.haram = haram;
+  data.lowRise = LOW_RISE_AREAS.map((a) => ({ ...a, ring: [...a.ring] }));
   data.replaces = [...new Set([...data.replaces.filter((id) => !old.has(id)), ...replaces])];
   data.patches = data.patches.filter((p) => p.name !== 'Dome of the Rock platform');
   const up = upperPlatformPatch(haram);
