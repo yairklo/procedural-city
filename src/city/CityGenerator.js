@@ -19,7 +19,7 @@ import { CityCollisionWorld } from './CityCollision.js';
 import { createProjection } from './geo.js';
 import {
   cleanRing, orientRings, footprintArea, ringsBounds, ringCentroid, pointInRings, distanceToEdges,
-  discInside, segmentDistance, decomposeFootprint,
+  discInside, segmentDistance, decomposeFootprint, orientedBox,
 } from './footprint.js';
 
 export const DEFAULT_CITY_OPTIONS = Object.freeze({
@@ -36,6 +36,13 @@ export const DEFAULT_CITY_OPTIONS = Object.freeze({
   defaultFloorsMax: 6,
   canopyHeight: 4.2,
 
+  // Terracotta hipped roofs: low (<= tileRoofMaxFloors) buildings OSM maps with a pitched
+  // roof, small and rectangular enough for a clean hip (footprint / oriented box >= 0.8).
+  tileRoofMaxArea: 450,
+  tileRoofMaxFloors: 3,
+  tileRoofPitchDeg: 27,
+  tileRoofOverhang: 0.35,
+
   // Rooftops (flat roofs only)
   solarChance: 0.85, // share of roofs that carry solar water heaters
   solarPerM2: 1 / 45, // one heater per ~45 m² of roof (roughly one per apartment)
@@ -51,13 +58,17 @@ export const DEFAULT_CITY_OPTIONS = Object.freeze({
   groundMargin: 150,
 });
 
-const STONE = [0xe3dac9, 0xd4c5b9, 0xdcd0bd, 0xe6dccb, 0xcfc0ad];
+// Jerusalem limestone, from pale "meleke" to warmer sand tones.
+const STONE = [0xe4d8c8, 0xd6c5b2, 0xdfd1bf, 0xe8dccb, 0xd9c9b4, 0xcfbca3];
+const TILES = [0xa0432e, 0xb33b24, 0xa8492f, 0x9c3f2a];
 const COLORS = {
-  ground: 0xa99f90, // stone dust / sidewalks between buildings
+  ground: 0xb9ae9c, // stone-slab sidewalks between buildings
   outerGround: 0x8d8471,
-  asphalt: 0x34363a,
+  asphalt: 0x3a3b3d,
+  curb: 0x808080,
+  marking: 0xe8e4d8,
   paving: 0xc9bea9, // pedestrian malls, squares, footways
-  park: 0x76834c,
+  park: 0x6f7f45,
   canopy: 0x9a9c98,
   solarTank: 0xf1f0ec,
   solarPanel: 0x1b202b,
@@ -83,7 +94,7 @@ const MAJOR = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 
 const SMALL_TYPES = new Set(['kiosk', 'shed', 'garage', 'garages', 'hut', 'cabin', 'toilets', 'service', 'transformer_tower', 'container', 'guardhouse']);
 const HOUSE_TYPES = new Set(['house', 'detached', 'semidetached_house', 'bungalow', 'terrace']);
 const CANOPY_TYPES = new Set(['roof', 'canopy', 'carport']);
-const FLAT_ROOFS = new Set([undefined, 'flat']);
+const PITCHED_ROOFS = new Set(['hipped', 'gabled', 'pyramidal', 'half-hipped', 'gambrel', 'mansard']);
 
 const ROAD_CELL = 24;
 
@@ -125,7 +136,8 @@ export function resolveHeight(tags, area, id, o = DEFAULT_CITY_OPTIONS) {
   } else {
     let lo = o.defaultFloorsMin, hi = o.defaultFloorsMax;
     if (SMALL_TYPES.has(type) || area < 30) lo = hi = 1;
-    else if (HOUSE_TYPES.has(type) || area < 90) { lo = 2; hi = 3; }
+    // Buildings mapped with a pitched roof are mostly the older low-rise houses (Nahlaot, Nahalat Shiva).
+    else if (HOUSE_TYPES.has(type) || area < 90 || (PITCHED_ROOFS.has(tags['roof:shape']) && area <= o.tileRoofMaxArea)) { lo = 2; hi = 3; }
     const r = hashString(id) / 4294967296;
     floors = lo + Math.floor(r * (hi - lo + 1));
     top = base + floors * fh + o.parapet;
@@ -241,6 +253,9 @@ export class CityGenerator {
       const stone = mixHex(styleRng.pick(STONE), styleRng.pick(STONE), styleRng.next());
       const shop = tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
       const street = tags['addr:street'];
+      const roof = !canopy && PITCHED_ROOFS.has(tags['roof:shape']) && area <= o.tileRoofMaxArea && h.floors <= o.tileRoofMaxFloors
+        ? hipRoof(rings[0], area, h.top, o, styleRng)
+        : null;
       const building = {
         id: `OSM-${src.id}`,
         osmId: src.id,
@@ -252,7 +267,10 @@ export class CityGenerator {
         base: h.base,
         height: h.top,
         heightSource: h.source,
-        flatRoof: FLAT_ROOFS.has(tags['roof:shape']),
+        // Jerusalem roofs are overwhelmingly flat; a pitched-roof tag on a large building is
+        // treated as flat (with rooftop equipment) rather than trusted.
+        flatRoof: !roof,
+        roof,
         rings,
         area,
         centroid,
@@ -265,6 +283,14 @@ export class CityGenerator {
       buildings.push(building);
       for (const b of building.boxes) {
         collision.add({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, minY: h.base, maxY: h.top, kind: 'building', ref: building.id });
+      }
+      if (roof) {
+        // Two stepped tiers approximate the roof volume, so you can stand on it but not walk through it.
+        for (const tier of roof.tiers) {
+          for (const b of decomposeFootprint([tier.ring], { step: 1 })) {
+            collision.add({ ...b, minY: tier.minY, maxY: tier.maxY, kind: 'building', ref: building.id });
+          }
+        }
       }
       if (!canopy && building.flatRoof && area >= o.minPropRoofArea && h.top >= 5) {
         placeRoofProps(building, propRng, o, solar, ac, collision);
@@ -374,6 +400,7 @@ export class CityGenerator {
         buildings: buildings.length,
         buildingsWithOsmHeight: heightFromOsm,
         canopies: buildings.filter((b) => b.kind === 'canopy').length,
+        tileRoofs: buildings.filter((b) => b.roof).length,
         tallest: buildings.reduce((mx, b) => Math.max(mx, b.height), 0),
         roads: roads.length,
         parks: parks.length,
@@ -410,15 +437,19 @@ export class CityGenerator {
       for (const g of geometries) disposables.add(g);
     };
     const { bounds } = data;
-    const origin = { x: bounds.minX, z: bounds.minZ };
+    const origin = {
+      x: bounds.minX, z: bounds.minZ,
+      nx: Math.max(1, Math.round((bounds.maxX - bounds.minX) / o.chunkSize)),
+      nz: Math.max(1, Math.round((bounds.maxZ - bounds.minZ) / o.chunkSize)),
+    };
     const margin = o.groundMargin;
     const width = bounds.maxX - bounds.minX + margin * 2, depth = bounds.maxZ - bounds.minZ + margin * 2;
     const cx = (bounds.minX + bounds.maxX) / 2, cz = (bounds.minZ + bounds.maxZ) / 2;
 
-    // Ground: stone-dust plane under the data area, darker land beyond it.
+    // Ground: stone-slab sidewalks under the whole data area, dry land beyond it.
     const ground = add(new THREE.Mesh(
       track(new THREE.PlaneGeometry(width, depth).rotateX(-Math.PI / 2).translate(cx, 0, cz)),
-      track(new THREE.MeshStandardMaterial({ color: COLORS.ground, roughness: 0.95 })),
+      track(createSurfaceMaterial('paving', COLORS.ground, { roughness: 0.9 })),
     ));
     ground.name = 'Ground';
     ground.receiveShadow = true;
@@ -429,24 +460,29 @@ export class CityGenerator {
     outer.name = 'OuterGround';
     outer.receiveShadow = true;
 
-    // Flat ground layers, drawn coplanar with the ground and separated with polygon offset.
-    const layer = (name, geometries, color, offset) => {
+    // Flat ground layers, coplanar with the ground and ordered with polygon offset:
+    // parks < pedestrian paving < curb stones < asphalt < lane markings.
+    const layer = (name, geometries, material) => {
       if (!geometries.length) return;
       const geo = track(mergeGeometries(geometries, false));
       for (const g of geometries) g.dispose();
-      const mesh = add(new THREE.Mesh(geo, track(new THREE.MeshStandardMaterial({
-        color, roughness: 0.92, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: offset,
-      }))));
+      const mesh = add(new THREE.Mesh(geo, track(material)));
       mesh.name = name;
       mesh.receiveShadow = true;
     };
-    layer('Parks', data.parks.map((p) => flatPolygonGeometry(p.rings, 0)), COLORS.park, -2);
-    const roadGeos = { asphalt: [], paving: [] };
+    layer('Parks', data.parks.map((p) => flatPolygonGeometry(p.rings, 0)), createSurfaceMaterial('grass', COLORS.park, { offset: -3 }));
+    const geos = { asphalt: [], paving: [], curb: [], marking: [] };
     for (const r of data.roads) {
-      roadGeos[r.surface].push(r.rings ? flatPolygonGeometry(r.rings, 0) : ribbonGeometry(r.points, r.width / 2, 0));
+      geos[r.surface].push(r.rings ? flatPolygonGeometry(r.rings, 0) : ribbonGeometry(r.points, r.width / 2, 0));
+      if (r.surface !== 'asphalt' || !r.points) continue;
+      // A curb-stone band just outside the carriageway, and a dashed center line on wider roads.
+      geos.curb.push(ribbonGeometry(r.points, r.width / 2 + CURB_WIDTH, 0));
+      if (r.width >= 8) geos.marking.push(dashedLineGeometry(r.points, 0.07, 3, 4));
     }
-    layer('Paving', roadGeos.paving, COLORS.paving, -4);
-    layer('Roads', roadGeos.asphalt, COLORS.asphalt, -6);
+    layer('Paving', geos.paving, createSurfaceMaterial('paving', COLORS.paving, { offset: -7 }));
+    layer('Curbs', geos.curb, createSurfaceMaterial('curb', COLORS.curb, { roughness: 0.85, offset: -11 }));
+    layer('Roads', geos.asphalt, createSurfaceMaterial('asphalt', COLORS.asphalt, { roughness: 0.93, offset: -15 }));
+    layer('Markings', geos.marking, createSurfaceMaterial('marking', COLORS.marking, { roughness: 0.7, offset: -19 }));
 
     // Buildings: real footprints extruded, merged per chunk with BufferGeometryUtils.
     const chunks = new Map();
@@ -607,6 +643,35 @@ function placeRoofProps(building, rng, o, solarOut, acOut, collision) {
 }
 
 // -----------------------------------------------------------------------------------------------
+// Tile roofs
+// -----------------------------------------------------------------------------------------------
+
+/** A hipped roof over the footprint's oriented box, or null if the footprint isn't rectangular enough. */
+function hipRoof(ring, area, eaveY, o, rng) {
+  const obb = orientedBox(ring);
+  if (!obb || area / obb.area < 0.8 || obb.hw < 2) return null;
+  const hl = obb.hl + o.tileRoofOverhang, hw = obb.hw + o.tileRoofOverhang;
+  const rise = hw * Math.tan((o.tileRoofPitchDeg * Math.PI) / 180);
+  const ridge = hl - hw; // hips meet at a point when the footprint is square
+  const at = (l, w) => [obb.cx + obb.ax * l - obb.az * w, obb.cz + obb.az * l + obb.ax * w];
+  const rect = (l, w) => [...at(-l, -w), ...at(l, -w), ...at(l, w), ...at(-l, w)];
+  return {
+    ...obb,
+    eaveY,
+    rise,
+    ridge,
+    color: mixHex(rng.pick(TILES), rng.pick(TILES), rng.next()),
+    // Faces as [x, y, z] triangles: two trapezoids along the long sides, two hip triangles.
+    eaves: [at(-hl, -hw), at(hl, -hw), at(hl, hw), at(-hl, hw)],
+    ridgeEnds: [at(-ridge, 0), at(ridge, 0)],
+    tiers: [
+      { ring: rect(obb.hl - obb.hw * 0.1, obb.hw * 0.66), minY: eaveY, maxY: eaveY + rise * 0.4 },
+      { ring: rect(Math.max(0.5, obb.hl - obb.hw * 0.55), obb.hw * 0.3), minY: eaveY + rise * 0.4, maxY: eaveY + rise * 0.75 },
+    ],
+  };
+}
+
+// -----------------------------------------------------------------------------------------------
 // Spawn
 // -----------------------------------------------------------------------------------------------
 
@@ -660,7 +725,10 @@ const _q = new THREE.Quaternion();
 const _e = new THREE.Euler(0, 0, 0, 'YXZ');
 const _c = new THREE.Color();
 
-const chunkKey = (x, z, origin, size) => `${Math.floor((x - origin.x) / size)},${Math.floor((z - origin.z) / size)}`;
+// Chunk index, clamped to the data area: stray buildings just outside the bbox join the
+// edge chunk instead of creating extra (draw-call-costing) chunks of their own.
+const chunkKey = (x, z, origin, size) =>
+  `${Math.min(origin.nx - 1, Math.max(0, Math.floor((x - origin.x) / size)))},${Math.min(origin.nz - 1, Math.max(0, Math.floor((z - origin.z) / size)))}`;
 
 /**
  * Groups items into square chunks and emits one InstancedMesh per chunk.
@@ -786,6 +854,29 @@ function ribbonGeometry(points, hw, y) {
   return sink.geometry();
 }
 
+const CURB_WIDTH = 0.3;
+
+/** Thin dashes centered on a polyline (lane markings). */
+function dashedLineGeometry(points, hw, dash, gap) {
+  const sink = new TriangleSink();
+  let phase = 0;
+  for (let i = 0; i + 3 < points.length; i += 2) {
+    const ax = points[i], az = points[i + 1], bx = points[i + 2], bz = points[i + 3];
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 1e-3) continue;
+    const dx = (bx - ax) / len, dz = (bz - az) / len, ox = -dz * hw, oz = dx * hw;
+    for (let t = -phase; t < len; t += dash + gap) {
+      const t0 = Math.max(0, t), t1 = Math.min(len, t + dash);
+      if (t1 <= t0) continue;
+      const p0 = [ax + dx * t0, az + dz * t0], p1 = [ax + dx * t1, az + dz * t1];
+      sink.tri([p0[0] + ox, 0, p0[1] + oz], [p0[0] - ox, 0, p0[1] - oz], [p1[0] - ox, 0, p1[1] - oz], UP);
+      sink.tri([p0[0] + ox, 0, p0[1] + oz], [p1[0] - ox, 0, p1[1] - oz], [p1[0] + ox, 0, p1[1] + oz], UP);
+    }
+    phase = (phase + len) % (dash + gap);
+  }
+  return sink.geometry();
+}
+
 const _lin = new THREE.Color();
 
 /** Walls + flat roof (and underside for canopies) for one building, with facade attributes. */
@@ -805,22 +896,88 @@ export function extrudeBuilding(b) {
       sink.tri([ax, y0, az], [bx, y1, bz], [ax, y1, az], n);
     }
   }
-  capTriangles(b.rings, y1, UP, sink);
+  if (b.roof) {
+    addHipRoof(b.roof, sink);
+  } else {
+    capTriangles(b.rings, y1, UP, sink);
+  }
   if (y0 > 0.01) capTriangles(b.rings, y0, DOWN, sink);
   return sink.geometry();
 }
 
+function addHipRoof(roof, sink) {
+  _lin.setHex(roof.color);
+  sink.extra = { color: [_lin.r, _lin.g, _lin.b], facade: [sink.extra.facade[0], 0, 0] };
+  const y0 = roof.eaveY, y1 = roof.eaveY + roof.rise;
+  const [e0, e1, e2, e3] = roof.eaves.map(([x, z]) => [x, y0, z]);
+  const [r0, r1] = roof.ridgeEnds.map(([x, z]) => [x, y1, z]);
+  const face = (a, b, c) => {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    let n = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+    const l = Math.hypot(...n) || 1;
+    n = n.map((v) => v / l);
+    if (n[1] < 0) n = n.map((v) => -v);
+    sink.tri(a, b, c, n);
+  };
+  // Long sides (e0-e1 and e2-e3 run along the ridge), then the two hip ends.
+  face(e0, e1, r1); face(e0, r1, r0);
+  face(e2, e3, r0); face(e2, r0, r1);
+  face(e1, e2, r1);
+  face(e3, e0, r0);
+  // Eave soffit, facing down.
+  sink.tri(e0, e1, e2, DOWN);
+  sink.tri(e0, e2, e3, DOWN);
+}
+
+// -----------------------------------------------------------------------------------------------
+// Materials
+// -----------------------------------------------------------------------------------------------
+
+// Shared GLSL helpers (hash, value noise, anti-aliased rectangle).
+const GLSL_COMMON = /* glsl */ `
+float cityHash(vec3 p) {
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+float cityNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = cityHash(vec3(i, 0.0)), b = cityHash(vec3(i + vec2(1.0, 0.0), 0.0));
+  float c = cityHash(vec3(i + vec2(0.0, 1.0), 0.0)), d = cityHash(vec3(i + vec2(1.0, 1.0), 0.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+float cityFbm(vec2 p) {
+  return 0.55 * cityNoise(p) + 0.3 * cityNoise(p * 2.13 + 7.1) + 0.15 * cityNoise(p * 4.37 + 3.3);
+}
+// 1 inside the centered box of half-size h (meters), anti-aliased over aa.
+float cityBox(vec2 p, vec2 h, float aa) {
+  vec2 m = 1.0 - smoothstep(-aa, aa, abs(p) - h);
+  return m.x * m.y;
+}`;
+
+// Bevel profile: tilt of a stone face toward the nearest joint (d0 / d1 = distance to each
+// joint in cell units, jw = mortar half-width, bw = bevel width).
+const GLSL_BEVEL = /* glsl */ `
+float cityBevel(float d0, float d1, float jw, float bw) {
+  return (1.0 - smoothstep(jw, bw, d0)) - (1.0 - smoothstep(jw, bw, d1));
+}`;
+
 /**
- * Jerusalem stone: MeshStandardMaterial (matte limestone, roughness 0.85) extended with a
- * procedural ashlar pattern (courses, staggered blocks, per-block tone), deep-set windows
- * with arched tops on some buildings, ground-floor shopfronts, pale flat roofs and warm lit
- * windows at night. All computed in world space, so any footprint shape works without UVs.
+ * Jerusalem stone: MeshStandardMaterial (matte limestone, roughness 0.85) extended in the
+ * shader with, all in world space so any footprint works without UVs:
+ *   - ashlar masonry: 36 cm courses, staggered blocks, mortar joints, bevelled edges and a
+ *     chiselled ("tobza") surface as normal perturbation, per-block tone, street-level grime;
+ *   - recessed windows (rectangular or arched) with stone surround, sill, shadowed reveal,
+ *     dark glass or curtains, and green / blue / wooden shutters, open or closed;
+ *   - ground-floor shops: glazed fronts or roll-down metal shutters under colored sign bands;
+ *   - pale flat roofs, terracotta tile roofs (sloped faces) and warm lit windows at night.
  *
- * Vertex inputs: color = stone tint, aFacade = (seed, window density 0..1, shopfronts 0/1).
+ * Vertex inputs: color = stone (or tile) tint, aFacade = (seed, window density 0..1, shops 0/1).
  */
 function createStoneMaterial(uniforms, floorHeight) {
   const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.85, metalness: 0 });
-  mat.customProgramCacheKey = () => 'jerusalem-stone-v1';
+  mat.customProgramCacheKey = () => 'jerusalem-stone-v2';
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = uniforms.uNight;
@@ -852,101 +1009,151 @@ uniform float uFloorHeight;
 varying vec3 vCityWorldPos;
 varying vec3 vCityWorldNormal;
 varying vec3 vCityFacade;
-float cityHash(vec3 p) {
-  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
-  p += dot(p, p.yxz + 33.33);
-  return fract((p.x + p.y) * p.z);
-}
-// 1 inside a centered box of half-size h (in cell units), anti-aliased.
-float cityRect(vec2 p, vec2 h, vec2 aa) {
-  vec2 m = 1.0 - smoothstep(-aa, aa, abs(p) - h);
-  return m.x * m.y;
-}`,
+${GLSL_COMMON}
+${GLSL_BEVEL}`,
       )
       .replace(
         '#include <color_fragment>',
         /* glsl */ `#include <color_fragment>
-float cityWin = 0.0;
-float cityLit = 0.0;
-float cityJoint = 0.0;
+float cityWin = 0.0;    // glass coverage (drives roughness + night lights)
+float cityLit = 0.0;    // lit share at night
+float cityRough = 0.0;  // roughness offset
+float cityMetal = 0.0;
+vec2 cityBump = vec2(0.0); // normal tilt along (cityT, up)
+vec3 cityT = vec3(1.0, 0.0, 0.0);
 {
   vec3 n = normalize(vCityWorldNormal);
+  vec3 P = vCityWorldPos;
   float seed = vCityFacade.x;
-  if (n.y > 0.5) {
-    // Flat roof: pale concrete / whitewash with stains.
-    float k = cityHash(vec3(floor(vCityWorldPos.xz * 0.5), 7.0));
-    float big = cityHash(vec3(floor(vCityWorldPos.xz * 0.12), 11.0));
-    diffuseColor.rgb = mix(vec3(0.35, 0.34, 0.32), vec3(0.37, 0.36, 0.34), k) * mix(0.88, 1.0, big);
-  } else if (n.y > -0.5) {
-    // Horizontal coordinate along the wall, whatever its direction.
-    vec2 t = normalize(vec2(-n.z, n.x));
-    float u = dot(vCityWorldPos.xz, t);
-    float y = vCityWorldPos.y;
 
-    // Ashlar: 34 cm courses, staggered blocks, per-block tone.
-    float cy = y / 0.34;
+  if (n.y > 0.97) {
+    // Flat roof: pale concrete / bitumen, stains and patched membrane.
+    float stain = cityFbm(P.xz * 0.35 + seed * 40.0);
+    float patchy = smoothstep(0.7, 0.8, cityNoise(P.xz * 0.2 + seed * 13.0));
+    vec3 roof = mix(vec3(0.42, 0.40, 0.36), vec3(0.5, 0.48, 0.43), stain);
+    diffuseColor.rgb = mix(roof, vec3(0.34, 0.33, 0.31), patchy * 0.35);
+    cityRough = 0.08;
+  } else if (n.y > 0.25) {
+    // Terracotta tiles: horizontal courses, staggered barrel tiles, shadowed overlaps.
+    vec2 th = normalize(vec2(-n.z, n.x));
+    float u = dot(P.xz, th);
+    float rows = P.y / 0.1;
+    float row = floor(rows);
+    float cu = u / 0.23 + 0.5 * mod(row, 2.0);
+    vec2 f = fract(vec2(cu, rows));
+    vec2 aa = fwidth(vec2(cu, rows)) + 1e-4;
+    float fade = smoothstep(0.3, 0.7, max(aa.x, aa.y));
+    float tone = cityHash(vec3(floor(cu), row, 13.0));
+    float lap = smoothstep(0.0, 0.3 + aa.y, f.y);
+    float barrel = 0.72 + 0.28 * sin(f.x * 3.14159);
+    float weather = cityFbm(P.xz * 0.5 + 3.0);
+    vec3 base = diffuseColor.rgb * mix(0.8, 1.1, tone) * mix(0.8, 1.05, weather);
+    vec3 tiles = base * mix(0.5, 1.0, lap) * barrel;
+    diffuseColor.rgb = mix(tiles, diffuseColor.rgb * 0.9, fade);
+    cityT = vec3(th.x, 0.0, th.y);
+    cityBump = vec2(cos(f.x * 3.14159) * 0.35, (1.0 - lap) * 0.5) * (1.0 - fade);
+    cityRough = -0.1;
+  } else if (n.y > -0.5) {
+    vec2 t2 = normalize(vec2(-n.z, n.x));
+    cityT = vec3(t2.x, 0.0, t2.y);
+    float u = dot(P.xz, t2);
+    float y = P.y;
+
+    // --- Ashlar masonry ---
+    float cy = y / 0.36;
     float row = floor(cy);
-    float cu = u / (0.62 + 0.18 * cityHash(vec3(row, seed * 17.0, 2.0))) + cityHash(vec3(row, 5.0, seed));
+    float blockLen = 0.55 + 0.4 * cityHash(vec3(row, seed * 17.0, 2.0));
+    float cu = u / blockLen + cityHash(vec3(row, 5.0, seed));
     vec2 sc = vec2(cu, cy);
     vec2 sf = fract(sc);
     vec2 saa = fwidth(sc) + 1e-4;
-    vec2 jd = min(sf, 1.0 - sf);
-    float joint = max(1.0 - smoothstep(0.0, 0.035 + saa.x, jd.x), 1.0 - smoothstep(0.0, 0.05 + saa.y, jd.y));
-    float tone = cityHash(vec3(floor(cu), row, seed * 31.0));
-    float stoneFade = smoothstep(0.2, 0.55, max(saa.x, saa.y));
-    vec3 base = diffuseColor.rgb;
-    vec3 stone = base * mix(0.9, 1.06, tone);
-    stone = mix(stone, base * 0.78, joint * 0.7);
-    diffuseColor.rgb = mix(stone, base * 0.97, stoneFade);
-    cityJoint = joint * (1.0 - stoneFade);
+    float stoneFade = smoothstep(0.12, 0.4, max(saa.x, saa.y));
+    vec2 jw = vec2(0.007 / blockLen, 0.009 / 0.36);
+    vec2 bw = vec2(0.04 / blockLen, 0.04 / 0.36);
+    vec2 dmin = min(sf, 1.0 - sf);
+    float mortar = max(1.0 - smoothstep(jw.x, jw.x + saa.x, dmin.x), 1.0 - smoothstep(jw.y, jw.y + saa.y, dmin.y));
+    vec2 slope = vec2(cityBevel(sf.x, 1.0 - sf.x, jw.x, bw.x), cityBevel(sf.y, 1.0 - sf.y, jw.y, bw.y));
+    vec2 chisel = floor(vec2(u, y) * 24.0);
+    cityBump = (-slope * 0.7 + (vec2(cityHash(vec3(chisel, 1.0)), cityHash(vec3(chisel, 2.0))) - 0.5) * 0.22) * (1.0 - stoneFade);
 
-    // Windows: narrow, deep-set, some buildings with arched tops.
+    float tone = cityHash(vec3(floor(cu), row, seed * 31.0));
+    float patina = cityFbm(vec2(u * 0.15, y * 0.25) + seed * 11.0);
+    vec3 base = diffuseColor.rgb * mix(0.9, 1.04, patina);
+    vec3 stone = base * mix(0.88, 1.08, tone);
+    stone = mix(stone, base * vec3(0.72, 0.71, 0.69), mortar);
+    diffuseColor.rgb = mix(stone, base * 0.98, stoneFade);
+    diffuseColor.rgb *= mix(0.8, 1.0, smoothstep(0.0, 1.3, y)); // street grime
+    cityRough = mortar * 0.1;
+
     float density = vCityFacade.y;
-    if (density > 0.0) {
-      float bay = mix(4.6, 3.3, density);
+    bool shopFloor = vCityFacade.z > 0.5 && y < uFloorHeight * 1.05;
+    if (density > 0.0 && shopFloor) {
+      // --- Ground-floor shops ---
+      float sb = 4.2;
+      float su = u / sb;
+      float sid = floor(su);
+      vec2 sp = vec2((fract(su) - 0.5) * sb, y);
+      float aam = fwidth(u) + 1e-4;
+      float front = cityBox(vec2(sp.x, sp.y - 1.45), vec2(1.55, 1.15), aam);
+      float surround = cityBox(vec2(sp.x, sp.y - 1.45), vec2(1.7, 1.25), aam) - front;
+      float signBand = cityBox(vec2(sp.x, sp.y - 2.95), vec2(1.75, 0.22), aam);
+      float h1 = cityHash(vec3(sid, seed, 4.0));
+      vec3 signCol = h1 < 0.25 ? vec3(0.45, 0.06, 0.05) : h1 < 0.5 ? vec3(0.05, 0.16, 0.35) : h1 < 0.7 ? vec3(0.07, 0.25, 0.12) : h1 < 0.85 ? vec3(0.6, 0.45, 0.08) : vec3(0.85, 0.83, 0.78);
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.8, surround);
+      diffuseColor.rgb = mix(diffuseColor.rgb, signCol, signBand);
+      cityBump *= 1.0 - max(front, signBand);
+      float shut = step(0.55, cityHash(vec3(sid, seed, 5.0)));
+      float ridges = 0.8 + 0.2 * step(0.5, fract(sp.y * 12.0));
+      vec3 shutter = vec3(0.42, 0.43, 0.44) * ridges;
+      vec3 glass = mix(vec3(0.03, 0.035, 0.04), vec3(0.13, 0.1, 0.07), cityHash(vec3(sid, 2.0, seed)));
+      diffuseColor.rgb = mix(diffuseColor.rgb, mix(glass, shutter, shut), front);
+      cityWin = front * (1.0 - shut);
+      cityMetal = front * shut * 0.6;
+      cityLit = cityWin * step(0.3, cityHash(vec3(sid, 6.0, seed)));
+    } else if (density > 0.0) {
+      // --- Windows ---
+      float bay = mix(4.4, 3.2, density);
       vec2 cell = vec2(u / bay, y / uFloorHeight);
       vec2 id = floor(cell);
       vec2 f = fract(cell) - 0.5;
       vec2 aa = fwidth(cell) + 1e-4;
-      vec2 hs = vec2(0.55 / bay, 0.27); // half-size: 1.1 m wide, ~1.7 m tall
-      vec2 p = vec2(f.x, f.y + 0.04);
-      float win = cityRect(p, hs, aa);
-      if (cityHash(vec3(seed, 3.0, 9.0)) > 0.55) {
-        // Arch: replace the top of the opening with a semicircle.
-        float r = hs.x * bay; // meters
-        vec2 pm = vec2(p.x * bay, p.y * uFloorHeight);
-        float topY = hs.y * uFloorHeight - r;
-        if (pm.y > topY) {
-          float d = length(vec2(pm.x, pm.y - topY)) - r;
-          win = 1.0 - smoothstep(-aa.x * bay, aa.x * bay, d);
-        }
-      }
-      // A few blind bays, and random missing windows per building.
-      win *= step(0.12, cityHash(vec3(id, seed * 7.0)));
-      float frame = cityRect(p, hs + vec2(0.1 / bay, 0.035), aa) - win;
+      float aam = max(aa.x * bay, aa.y * uFloorHeight);
+      vec2 pm = vec2(f.x * bay, (f.y + 0.04) * uFloorHeight);
+      vec2 hs = vec2(0.55, 0.8);
+      bool arched = cityHash(vec3(seed, 3.0, 9.0)) > 0.55;
+      vec2 q = abs(pm) - hs;
+      float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+      float springY = hs.y - hs.x;
+      if (arched && pm.y > springY) d = length(vec2(pm.x, pm.y - springY)) - hs.x;
+      float present = step(0.1, cityHash(vec3(id, seed * 7.0)));
+      float opening = (1.0 - smoothstep(-aam, aam, d)) * present;
+      float surround = (1.0 - smoothstep(-aam, aam, d - 0.1)) * present - opening;
+      float sill = cityBox(vec2(pm.x, pm.y + hs.y + 0.05), vec2(hs.x + 0.12, 0.05), aam) * present;
 
-      // Ground floor: shopfronts with metal shutters.
-      bool ground = y < uFloorHeight * 1.05;
-      if (ground) {
-        if (vCityFacade.z > 0.5) {
-          vec2 sp = vec2(fract(u / 4.2) - 0.5, y);
-          float shop = cityRect(vec2(sp.x, sp.y - 1.55), vec2(0.4, 1.2), vec2(fwidth(u / 4.2), fwidth(y)) + 1e-4);
-          win = shop;
-          frame = 0.0;
-          id = vec2(floor(u / 4.2), -1.0);
-        } else {
-          win *= 0.0;
-          frame *= 0.0;
-        }
-      }
+      // Shutters: this building's color, open beside the window or closed over it.
+      float sh = cityHash(vec3(seed, 8.0, 1.0));
+      bool hasShutters = sh > 0.4 && !arched;
+      vec3 shutterCol = sh > 0.8 ? vec3(0.1, 0.2, 0.13) : sh > 0.62 ? vec3(0.13, 0.2, 0.28) : vec3(0.22, 0.13, 0.07);
+      float louver = 0.75 + 0.25 * step(0.4, fract(pm.y * 14.0));
+      float closed = hasShutters ? step(cityHash(vec3(id, seed + 2.0)), 0.25) : 0.0;
+      float leaves = hasShutters ? cityBox(vec2(abs(pm.x) - hs.x * 1.5 - 0.12, pm.y), vec2(hs.x * 0.5, hs.y), aam) * present * (1.0 - closed) : 0.0;
+
+      // Recess: the reveal shades the top and one side of the glass.
+      float reveal = max(smoothstep(hs.y - 0.3, hs.y, pm.y), smoothstep(hs.x - 0.2, hs.x, -pm.x));
+      float curtain = step(0.8, cityHash(vec3(id, seed + 9.0)));
+      vec3 glass = mix(vec3(0.035, 0.04, 0.045), vec3(0.3, 0.26, 0.2), curtain) * mix(1.0, 0.45, reveal);
+
       float fade = smoothstep(0.25, 0.6, max(aa.x, aa.y));
-      float avg = (2.0 * hs.x) * (2.0 * hs.y) * 0.9;
-      cityWin = mix(win, avg, fade);
-      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.08, frame * (1.0 - fade));
+      float avg = (2.0 * hs.x / bay) * (2.0 * hs.y / uFloorHeight) * 0.9;
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.06, (surround + sill) * (1.0 - fade));
+      diffuseColor.rgb = mix(diffuseColor.rgb, shutterCol * louver, leaves * (1.0 - fade));
+      vec3 inOpening = mix(glass, shutterCol * louver, closed);
+      float cover = mix(opening, avg, fade);
+      diffuseColor.rgb = mix(diffuseColor.rgb, mix(inOpening, glass, fade), cover);
+      cityWin = cover * (1.0 - closed);
+      cityBump *= 1.0 - max(opening, leaves);
       float lit = step(0.6, cityHash(vec3(id, n.x * 3.0 + n.z * 5.0 + seed * 97.0)));
-      cityLit = mix(win * lit, avg * 0.4, fade);
-      vec3 glass = mix(vec3(0.03, 0.035, 0.04), vec3(0.09, 0.11, 0.12), cityHash(vec3(id, 3.0)));
-      diffuseColor.rgb = mix(diffuseColor.rgb, glass, cityWin);
+      cityLit = mix(opening * (1.0 - closed) * lit, avg * 0.4, fade);
     }
   }
 }`,
@@ -954,17 +1161,110 @@ float cityJoint = 0.0;
       .replace(
         '#include <roughnessmap_fragment>',
         /* glsl */ `#include <roughnessmap_fragment>
-roughnessFactor = mix(roughnessFactor, 0.95, cityJoint);
-roughnessFactor = mix(roughnessFactor, 0.15, cityWin);`,
+roughnessFactor = clamp(roughnessFactor + cityRough, 0.0, 1.0);
+roughnessFactor = mix(roughnessFactor, 0.12, cityWin);`,
+      )
+      .replace(
+        '#include <metalnessmap_fragment>',
+        /* glsl */ `#include <metalnessmap_fragment>
+metalnessFactor = max(metalnessFactor, cityMetal);`,
+      )
+      .replace(
+        '#include <normal_fragment_maps>',
+        /* glsl */ `#include <normal_fragment_maps>
+{
+  vec3 tV = normalize((viewMatrix * vec4(cityT, 0.0)).xyz);
+  vec3 uV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+  normal = normalize(normal + tV * cityBump.x + uV * cityBump.y);
+}`,
       )
       .replace(
         '#include <emissivemap_fragment>',
         /* glsl */ `#include <emissivemap_fragment>
 {
   float tint = cityHash(vec3(floor(vCityWorldPos.y / uFloorHeight), vCityFacade.x * 53.0, 1.0));
-  vec3 warm = mix(vec3(1.0, 0.7, 0.4), vec3(0.8, 0.87, 1.0), step(0.8, tint));
-  totalEmissiveRadiance += cityLit * uNight * warm * 1.4;
+  vec3 warm = mix(vec3(1.0, 0.68, 0.38), vec3(0.8, 0.87, 1.0), step(0.85, tint));
+  totalEmissiveRadiance += cityLit * uNight * warm * 1.6;
 }`,
+      );
+  };
+  return mat;
+}
+
+/**
+ * Ground surfaces, all procedural in world space:
+ *   'paving'  Jerusalem stone slabs in running bond (sidewalks, squares, pedestrian streets)
+ *   'asphalt' worn dark-gray asphalt: grain, mottling, patched repairs, lighter wheel tracks
+ *   'curb'    gray curb stones
+ *   'grass'   dry Mediterranean lawn
+ *   'marking' worn white paint
+ */
+function createSurfaceMaterial(kind, color, { roughness = 0.92, offset = 0 } = {}) {
+  const mat = new THREE.MeshStandardMaterial({
+    color, roughness, metalness: 0,
+    polygonOffset: offset !== 0, polygonOffsetFactor: offset !== 0 ? -1 : 0, polygonOffsetUnits: offset,
+  });
+  mat.customProgramCacheKey = () => `city-surface-${kind}`;
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSurfPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vSurfPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying vec3 vSurfPos;\n#define SURF_${kind.toUpperCase()}\n${GLSL_COMMON}\n${GLSL_BEVEL}`)
+      .replace(
+        '#include <color_fragment>',
+        /* glsl */ `#include <color_fragment>
+vec2 surfBump = vec2(0.0);
+float surfRough = 0.0;
+{
+  vec2 p = vSurfPos.xz;
+  vec3 base = diffuseColor.rgb;
+#if defined(SURF_PAVING)
+  // 60 x 40 cm slabs, running bond.
+  vec2 cell = vec2(p.x / 0.8, p.y / 0.5);
+  cell.x += 0.5 * mod(floor(cell.y), 2.0);
+  vec2 f = fract(cell);
+  vec2 aa = fwidth(cell) + 1e-4;
+  float fade = smoothstep(0.15, 0.45, max(aa.x, aa.y));
+  vec2 dmin = min(f, 1.0 - f);
+  float joint = max(1.0 - smoothstep(0.012, 0.012 + aa.x, dmin.x), 1.0 - smoothstep(0.018, 0.018 + aa.y, dmin.y));
+  float tone = cityHash(vec3(floor(cell), 4.0));
+  float dirt = cityFbm(p * 0.25);
+  vec3 slab = base * mix(0.95, 1.04, tone) * mix(0.9, 1.02, dirt);
+  diffuseColor.rgb = mix(mix(slab, base * 0.82, joint), base * mix(0.93, 1.0, dirt), fade);
+  surfBump = vec2(cityBevel(f.x, 1.0 - f.x, 0.012, 0.05), cityBevel(f.y, 1.0 - f.y, 0.018, 0.07)) * -0.3 * (1.0 - fade);
+#elif defined(SURF_ASPHALT)
+  float grain = cityHash(vec3(floor(p * 30.0), 1.0));
+  float mottle = cityFbm(p * 0.08);
+  float fine = cityFbm(p * 1.3);
+  float patched = step(0.78, cityNoise(p * 0.05 + 17.0)) * step(0.35, cityNoise(p * 0.4));
+  vec2 gaa = fwidth(p * 30.0);
+  float gfade = smoothstep(0.5, 1.5, max(gaa.x, gaa.y));
+  vec3 a = base * mix(0.8, 1.25, mottle) * mix(0.9, 1.08, fine);
+  a *= mix(mix(0.85, 1.15, grain), 1.0, gfade);
+  a = mix(a, base * 0.7, patched);
+  diffuseColor.rgb = a;
+  surfBump = (vec2(grain, cityHash(vec3(floor(p * 30.0), 2.0))) - 0.5) * 0.25 * (1.0 - gfade);
+  surfRough = -0.1 * mottle;
+#elif defined(SURF_CURB)
+  float seg = fract((p.x + p.y) / 0.9);
+  float joint = 1.0 - smoothstep(0.0, 0.03 + fwidth((p.x + p.y) / 0.9), min(seg, 1.0 - seg));
+  diffuseColor.rgb = base * mix(0.92, 1.05, cityHash(vec3(floor((p.x + p.y) / 0.9), 3.0, 1.0))) * mix(1.0, 0.6, joint);
+#elif defined(SURF_GRASS)
+  float g = cityFbm(p * 0.3);
+  float blades = cityHash(vec3(floor(p * 12.0), 5.0));
+  diffuseColor.rgb = base * mix(0.75, 1.15, g) * mix(0.9, 1.05, blades);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.36, 0.22), smoothstep(0.6, 0.85, cityNoise(p * 0.15 + 5.0)) * 0.6);
+#elif defined(SURF_MARKING)
+  diffuseColor.rgb = base * mix(0.55, 1.0, smoothstep(0.25, 0.7, cityFbm(p * 2.0)));
+#endif
+}`,
+      )
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + surfRough, 0.0, 1.0);')
+      .replace(
+        '#include <normal_fragment_maps>',
+        /* glsl */ `#include <normal_fragment_maps>
+normal = normalize(normal + normalize((viewMatrix * vec4(1.0, 0.0, 0.0, 0.0)).xyz) * surfBump.x + normalize((viewMatrix * vec4(0.0, 0.0, 1.0, 0.0)).xyz) * surfBump.y);`,
       );
   };
   return mat;

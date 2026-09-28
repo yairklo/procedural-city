@@ -183,6 +183,33 @@ test('rooftops: solar heaters and AC units sit on flat roofs inside the footprin
   assert.ok(data.buildings.filter((b) => b.kind === 'canopy').every((b) => !solar.some((s) => s.buildingId === b.id)));
 });
 
+test('tile roofs: low pitched-roof houses get a hipped terracotta roof you can stand on', () => {
+  const osm = convertOverpass(syntheticOverpass());
+  // Tag a few small rectangular buildings as hipped, like much of Nahlaot in OSM.
+  const small = osm.buildings.filter((b) => b.rings.length === 1 && b.rings[0].length === 8 && !b.tags.height && !b.tags['building:levels']).slice(0, 6);
+  for (const b of small) b.tags['roof:shape'] = 'hipped';
+  const gen = new CityGenerator({ osm, tileRoofMaxArea: 2000 });
+  const d = gen.generate();
+  const roofed = d.buildings.filter((b) => b.roof);
+  assert.ok(roofed.length > 0, 'some hipped roofs');
+  for (const b of roofed) {
+    assert.ok(b.floors <= 3, 'only low-rise buildings');
+    assert.equal(b.flatRoof, false);
+    assert.ok(!d.roofProps.solar.some((s) => s.buildingId === b.id), 'no solar heaters on tiles');
+    // Standing on the roof near the ridge is higher than the eaves.
+    const top = d.collision.groundHeight(b.roof.cx, b.roof.cz);
+    assert.ok(top > b.height + b.roof.rise * 0.5 && top <= b.height + b.roof.rise + 1e-6, `ridge ${top} vs eaves ${b.height}`);
+    // Roof faces point up and the winding matches.
+    const g = extrudeBuilding(b);
+    const pos = g.getAttribute('position').array, nrm = g.getAttribute('normal').array;
+    let sloped = 0;
+    for (let t = 0; t < pos.length; t += 9) {
+      if (nrm[t + 1] > 0.3 && nrm[t + 1] < 0.97) sloped++;
+    }
+    assert.ok(sloped >= 6, 'hip roof has sloped faces');
+  }
+});
+
 test('render: static geometry is merged, well under 100 draw calls', () => {
   let meshes = 0;
   city.group.traverse((o) => {

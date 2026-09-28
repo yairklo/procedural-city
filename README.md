@@ -11,7 +11,7 @@ npm test             # node:test suite (synthetic data + the real data file when
 npm run build
 ```
 
-Controls: WASD move · Shift sprint · Space jump · E boost jump (reach rooftops) · drag to orbit · N day/night · R respawn.
+Controls: WASD move · Shift sprint · Space jump · E boost jump (reach rooftops) · drag to orbit · N day/night · P post-processing on/off · R respawn.
 
 ## Data
 
@@ -35,10 +35,26 @@ before a commercial release.
   - `build()`: extrudes the real footprint shapes (walls, flat roofs, canopy undersides),
     merges them per 500 m chunk with `BufferGeometryUtils.mergeGeometries`, renders roads
     as ribbons along OSM lines, and draws solar water heaters (dud shemesh), AC units and
-    trees as chunked `InstancedMesh`es. About 20–30 draw calls in total.
-  - Jerusalem stone material: `MeshStandardMaterial` (limestone `#E3DAC9` / `#D4C5B9`,
-    roughness 0.85) with a procedural ashlar pattern, arched windows, shopfronts and lit
-    windows at night, all computed in world space (no textures or UVs).
+    trees as chunked `InstancedMesh`es. About 45 meshes in the scene. Counting
+    the shadow cascades and the AO normal pass, a frame is roughly 350 draw calls.
+  - Jerusalem stone material: `MeshStandardMaterial` (limestone `#E4D8C8` to `#D6C5B2`,
+    roughness 0.85) extended in the shader, in world space on any wall direction (no UVs):
+    36 cm masonry courses with mortar joints, bevelled and chiselled block relief (normal
+    perturbation), recessed rectangular or arched windows with sills and green, blue or
+    wooden shutters, ground-floor shops with sign bands and roll-down shutters, and lit
+    windows at night.
+- Roofs: flat roofs get solar water heaters (dud shemesh) and AC units. Low (≤ 3 floor)
+  buildings that OSM maps with a pitched roof, and whose footprint is close to a rectangle,
+  get a hipped terracotta roof (`#A0432E` / `#B33B24`). Two stepped collision tiers let you
+  stand on the roof without walking through it (377 of 1,282 buildings in the current data).
+- Ground: stone-slab sidewalks, worn asphalt with gray (`#808080`) curb stones and dashed
+  center lines on wider roads, dry-grass parks. All procedural shaders, merged per layer.
+- `src/render/lighting.js`: physical sky (also the image-based ambient light), a
+  late-afternoon sun (45° elevation, west-south-west, `#FFF3E0`) with 4 cascaded shadow maps
+  (CSM, 2048² each, out to 700 m), and a hemisphere fill (`#87CEEB` sky / `#D2B48C` ground).
+- `src/render/postprocessing.js`: 4x MSAA HDR render → GTAO (ambient occlusion, 2.2 m radius,
+  for contact shadows in streets and alleys) → bloom (highlights only) → warm color grade →
+  vignette → ACES Filmic tone mapping.
 - `src/city/geo.js`: lat/lon → local meters (+X east, −Z north, origin at the bbox center).
 - `src/city/footprint.js`: polygon helpers and `decomposeFootprint()`, which turns any
   footprint (rotated, concave, with holes) into axis-aligned boxes for collision.

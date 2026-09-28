@@ -194,3 +194,39 @@ export function decomposeFootprint(rings, { step = 0.6, mergeTol = 0.04 } = {}) 
   const alongZ = stripBoxes(rings, bounds, step, 1, mergeTol);
   return alongZ.length < alongX.length ? alongZ : alongX;
 }
+
+/**
+ * Minimum-area oriented rectangle around a ring, tested against each edge direction.
+ * Returns center, unit long axis (ax, az), and half length / half width (hl >= hw).
+ */
+export function orientedBox(ring) {
+  let best = null;
+  for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+    const dx = ring[i] - ring[j], dz = ring[i + 1] - ring[j + 1];
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-6) continue;
+    const ux = dx / len, uz = dz / len;
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (let k = 0; k < ring.length; k += 2) {
+      const u = ring[k] * ux + ring[k + 1] * uz, v = -ring[k] * uz + ring[k + 1] * ux;
+      if (u < minU) minU = u;
+      if (u > maxU) maxU = u;
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+    const area = (maxU - minU) * (maxV - minV);
+    if (!best || area < best.area) {
+      const cu = (minU + maxU) / 2, cv = (minV + maxV) / 2;
+      best = { area, cx: cu * ux - cv * uz, cz: cu * uz + cv * ux, ux, uz, hu: (maxU - minU) / 2, hv: (maxV - minV) / 2 };
+    }
+  }
+  if (!best) return null;
+  // Long axis first.
+  const long = best.hu >= best.hv;
+  return {
+    cx: best.cx, cz: best.cz,
+    ax: long ? best.ux : -best.uz, az: long ? best.uz : best.ux,
+    hl: long ? best.hu : best.hv, hw: long ? best.hv : best.hu,
+    area: best.area,
+  };
+}

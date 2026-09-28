@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { CityGenerator, findRoadsAt, findPlaceAt } from './city/CityGenerator.js';
+import { createLighting } from './render/lighting.js';
+import { createPostProcessing } from './render/postprocessing.js';
 import './style.css';
 
 // ------------------------------------------------------------------------------------------------
@@ -15,15 +16,13 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'hi
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = 0.82;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.info.autoReset = false; // count every pass of a frame (shadows, AO, post)
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-pmrem.dispose();
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.5, 4000);
 
@@ -39,53 +38,15 @@ controls.enablePan = false;
 // Lighting + day / night
 // ------------------------------------------------------------------------------------------------
 
-const hemi = new THREE.HemisphereLight(0xffffff, 0xffffff, 1);
-scene.add(hemi);
-
-const sun = new THREE.DirectionalLight(0xffffff, 1);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -140;
-sun.shadow.camera.right = 140;
-sun.shadow.camera.top = 140;
-sun.shadow.camera.bottom = -140;
-sun.shadow.camera.near = 10;
-sun.shadow.camera.far = 900;
-sun.shadow.bias = -0.0004;
-sun.shadow.normalBias = 0.6;
-scene.add(sun, sun.target);
-const SUN_OFFSET = new THREE.Vector3(180, 320, 120);
-
-const LOOK = {
-  day: {
-    sky: new THREE.Color(0xa9c4dc), fogFar: 1400,
-    hemiSky: new THREE.Color(0xdbe8f5), hemiGround: new THREE.Color(0x6b6256), hemi: 1.1,
-    sun: new THREE.Color(0xfff1dc), sunIntensity: 2.8, env: 0.55, exposure: 1.0,
-  },
-  night: {
-    sky: new THREE.Color(0x0b1020), fogFar: 1100,
-    hemiSky: new THREE.Color(0x2a3656), hemiGround: new THREE.Color(0x14120f), hemi: 0.2,
-    sun: new THREE.Color(0x9fb4ff), sunIntensity: 0.35, env: 0.08, exposure: 1.25,
-  },
-};
-scene.fog = new THREE.Fog(LOOK.day.sky.clone(), 150, LOOK.day.fogFar);
-scene.background = LOOK.day.sky.clone();
+const lighting = createLighting({ renderer, scene, camera });
+const post = createPostProcessing(renderer, scene, camera);
 
 let night = 0;
 let nightTarget = 0;
 
 function applyLook(t) {
-  const a = LOOK.day, b = LOOK.night;
-  scene.background.lerpColors(a.sky, b.sky, t);
-  scene.fog.color.copy(scene.background);
-  scene.fog.far = THREE.MathUtils.lerp(a.fogFar, b.fogFar, t);
-  hemi.color.lerpColors(a.hemiSky, b.hemiSky, t);
-  hemi.groundColor.lerpColors(a.hemiGround, b.hemiGround, t);
-  hemi.intensity = THREE.MathUtils.lerp(a.hemi, b.hemi, t);
-  sun.color.lerpColors(a.sun, b.sun, t);
-  sun.intensity = THREE.MathUtils.lerp(a.sunIntensity, b.sunIntensity, t);
-  scene.environmentIntensity = THREE.MathUtils.lerp(a.env, b.env, t);
-  renderer.toneMappingExposure = THREE.MathUtils.lerp(a.exposure, b.exposure, t);
+  lighting.setNight(t);
+  post.setNight(t);
   city?.setNight(t);
 }
 
@@ -100,6 +61,7 @@ const player = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ color: 0xff7a2f, roughness: 0.5 }),
 );
 player.castShadow = true;
+lighting.setupMaterial(player.material);
 scene.add(player);
 
 const velocity = new THREE.Vector3();
@@ -112,6 +74,7 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (e.code === 'KeyN') nightTarget = nightTarget > 0.5 ? 0 : 1;
   if (e.code === 'KeyR') respawn();
+  if (e.code === 'KeyP') post.enabled = !post.enabled;
   if (e.code === 'Space' && grounded) velocity.y = PLAYER.jump;
   if (e.code === 'KeyE') velocity.y = PLAYER.boost; // test jump for reaching rooftops
 });
@@ -180,10 +143,6 @@ function followCamera() {
   camera.position.add(target.clone().sub(_prevTarget));
   controls.target.copy(target);
   _prevTarget.copy(target);
-
-  // The shadow camera follows the player, so shadows stay sharp everywhere.
-  sun.position.copy(player.position).add(SUN_OFFSET);
-  sun.target.position.copy(player.position);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -204,10 +163,12 @@ async function loadOsm() {
 function buildCity(osm) {
   if (city) {
     scene.remove(city.group);
+    city.group.traverse((o) => o.material && lighting.releaseMaterial(o.material));
     city.dispose();
   }
   city = new CityGenerator({ osm }).create();
   scene.add(city.group);
+  city.group.traverse((o) => o.material && lighting.setupMaterial(o.material));
   city.setNight(night);
   respawn();
 
@@ -256,11 +217,11 @@ function updateHud(dt) {
   const info = renderer.info.render;
   hud.innerHTML =
     `<strong>${data.name}</strong>${place ? ` <span class="dim">· ${place.name}</span>` : ''}\n` +
-    `${fps} fps · ${info.calls} draw calls · ${(info.triangles / 1000).toFixed(0)}k tris\n` +
+    `${fps} fps · ${info.calls} draw calls/frame (all passes) · ${(info.triangles / 1000).toFixed(0)}k tris\n` +
     `${data.stats.buildings} buildings · ${data.stats.colliders} colliders · built in ${data.stats.generateMs + data.stats.buildMs} ms\n` +
     `<span class="dim">at</span> ${where}  <span class="dim">y=${p.y.toFixed(1)}</span>\n` +
     (touched ? `<span class="dim">touching</span> ${touched.name ?? touched.address ?? touched.id} · ${touched.height.toFixed(1)} m (${touched.heightSource})\n` : '') +
-    `<span class="dim">WASD move · Shift sprint · Space jump · E boost · drag to orbit · N day/night · R respawn</span>\n` +
+    `<span class="dim">WASD move · Shift sprint · Space jump · E boost · drag to orbit · N day/night · P post-fx ${post.enabled ? 'on' : 'off'} · R respawn</span>\n` +
     `<span class="dim">${data.source.attribution}</span>`;
 }
 
@@ -274,6 +235,8 @@ function onResize() {
   camera.updateProjectionMatrix();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(w, h);
+  post.setSize(w, h);
+  lighting.onResize();
 }
 window.addEventListener('resize', onResize);
 
@@ -298,6 +261,8 @@ renderer.setAnimationLoop(() => {
   updatePlayer(dt);
   followCamera();
   controls.update();
-  renderer.render(scene, camera);
+  lighting.update();
+  renderer.info.reset();
+  post.render(dt);
   updateHud(dt);
 });
