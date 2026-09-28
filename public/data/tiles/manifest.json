@@ -134,6 +134,94 @@
     "trees": 20,
     "places": 0
    }
+  },
+  {
+   "id": "4_0",
+   "i": 4,
+   "j": 0,
+   "bbox": {
+    "south": 31.765,
+    "west": 35.229,
+    "north": 31.77,
+    "east": 35.235
+   },
+   "file": "osm_4_0.json",
+   "bytes": 51583,
+   "fetchedAt": "2026-09-28T14:46:10Z",
+   "stats": {
+    "buildings": 169,
+    "roads": 70,
+    "roadAreas": 2,
+    "parks": 3,
+    "trees": 9,
+    "places": 0
+   }
+  },
+  {
+   "id": "0_1",
+   "i": 0,
+   "j": 1,
+   "bbox": {
+    "south": 31.77,
+    "west": 35.205,
+    "north": 31.775,
+    "east": 35.211
+   },
+   "file": "osm_0_1.json",
+   "bytes": 37042,
+   "fetchedAt": "2026-09-28T14:46:10Z",
+   "stats": {
+    "buildings": 66,
+    "roads": 87,
+    "roadAreas": 0,
+    "parks": 4,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "1_1",
+   "i": 1,
+   "j": 1,
+   "bbox": {
+    "south": 31.77,
+    "west": 35.211,
+    "north": 31.775,
+    "east": 35.217
+   },
+   "file": "osm_1_1.json",
+   "bytes": 87546,
+   "fetchedAt": "2026-09-28T14:46:10Z",
+   "stats": {
+    "buildings": 307,
+    "roads": 106,
+    "roadAreas": 0,
+    "parks": 6,
+    "trees": 2,
+    "places": 0
+   }
+  },
+  {
+   "id": "2_1",
+   "i": 2,
+   "j": 1,
+   "bbox": {
+    "south": 31.77,
+    "west": 35.217,
+    "north": 31.775,
+    "east": 35.223
+   },
+   "file": "osm_2_1.json",
+   "bytes": 84169,
+   "fetchedAt": "2026-09-28T14:59:36Z",
+   "stats": {
+    "buildings": 163,
+    "roads": 190,
+    "roadAreas": 1,
+    "parks": 10,
+    "trees": 9,
+    "places": 0
+   }
   }
  ],
  "places": [
@@ -208,6 +296,78 @@
    "nameEn": "Abu Tor",
    "lat": 31.7645177,
    "lon": 35.2324444
+  },
+  {
+   "id": "n11607797137",
+   "place": "suburb",
+   "name": "סילוואן",
+   "nameEn": "Silwan",
+   "lat": 31.7706028,
+   "lon": 35.2369571
+  },
+  {
+   "id": "n2417519373",
+   "place": "neighbourhood",
+   "name": "מעלה הזיתים",
+   "nameEn": "Maale HaZeitim",
+   "lat": 31.7723443,
+   "lon": 35.2407798
+  },
+  {
+   "id": "n2081525621",
+   "place": "suburb",
+   "name": "ניות",
+   "nameEn": "Nayot",
+   "lat": 31.7693712,
+   "lon": 35.2024424
+  },
+  {
+   "id": "n2081525614",
+   "place": "suburb",
+   "name": "קרית הממשלה",
+   "nameEn": "Kiryat HaMemshalah",
+   "lat": 31.7799495,
+   "lon": 35.2028074
+  },
+  {
+   "id": "n2081525622",
+   "place": "suburb",
+   "name": "קטמון הישנה",
+   "nameEn": "Old Katamon",
+   "lat": 31.7660228,
+   "lon": 35.2093317
+  },
+  {
+   "id": "n562664558",
+   "place": "suburb",
+   "name": "רחביה",
+   "nameEn": "Rehavia",
+   "lat": 31.7748,
+   "lon": 35.2120777
+  },
+  {
+   "id": "n2081525615",
+   "place": "suburb",
+   "name": "קרית שמואל",
+   "nameEn": "Kiryat Shmuel",
+   "lat": 31.7688698,
+   "lon": 35.2114263
+  },
+  {
+   "id": "n2081525627",
+   "place": "suburb",
+   "name": "שערי חסד",
+   "nameEn": "Shaarei Hesed",
+   "lat": 31.7774143,
+   "lon": 35.211642
+  },
+  {
+   "id": "n9107818768",
+   "place": "neighbourhood",
+   "name": "נחלת שבעה",
+   "nameEn": "Nahalat Shiva",
+   "lat": 31.7807932,
+   "lon": 35.2204395
   }
  ]
 }
