@@ -174,7 +174,10 @@ function buildCity(osm) {
 
   // Handy for debugging from the devtools console.
   window.city = city;
-  window.debug = { camera, controls, player, scene, renderer };
+  window.debug = {
+    camera, controls, player, scene, renderer, lighting, post,
+    setNight: (v) => { night = nightTarget = v; applyLook(v); },
+  };
   console.info(`[city] ${city.data.name}`, city.data.stats);
 }
 

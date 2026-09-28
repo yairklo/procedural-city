@@ -27,8 +27,8 @@ const LOOK = {
   },
   night: {
     background: new THREE.Color(0x0a0f1d), fog: new THREE.Color(0x0e1322), fogNear: 120, fogFar: 1200,
-    hemiSky: new THREE.Color(0x2a3656), hemiGround: new THREE.Color(0x16120d), hemi: 0.18,
-    sun: new THREE.Color(0x9fb4ff), sunIntensity: 0.3, env: 0.06, exposure: 1.2,
+    hemiSky: new THREE.Color(0x2a3656), hemiGround: new THREE.Color(0x3a2a18), hemi: 0.1,
+    sun: new THREE.Color(0x9fb4ff), sunIntensity: 0.1, env: 0.03, exposure: 1.1, // faint moonlight
   },
 };
 
