@@ -70,3 +70,49 @@ test('rigged pedestrians: every visible pedestrian is drawn exactly once', async
   assert.ok(sys.agents.some((a) => !a.rigged), 'most people stay instanced mannequins');
   rigged.dispose();
 });
+
+test('pedestrians face the way they walk (mannequins and rigged models)', async () => {
+  const THREE = await import('three');
+  const roads = [];
+  for (let k = 0; k <= 4; k++) {
+    const c = -160 + k * 80;
+    roads.push({ id: `ns${k}`, highway: 'residential', surface: 'asphalt', width: 8, points: [c, -160, c, 160] });
+    roads.push({ id: `ew${k}`, highway: 'residential', surface: 'asphalt', width: 8, points: [-160, c, 160, c] });
+  }
+  const sys = new PedestrianSystem({ collision: new CityCollisionWorld(), options: { seed: 'facing' } });
+  sys.setNetwork(RoadNetwork.fromRoads(roads));
+  const rigged = new RiggedPedestrians({ ...(await loadModel()), options: { max: 4, radius: 79, release: 85 } });
+  sys.attachRigged(rigged);
+  const center = { x: 0, y: 0, z: 0 };
+  for (let t = 0; t < 2; t += 1 / 30) sys.update(1 / 30, center, null);
+  const before = new Map(sys.agents.map((a) => [a, [a.x, a.z]]));
+  sys.update(1 / 30, center, null);
+  sys.update(1 / 30, center, null);
+  sys.render({ position: center }, 2.1);
+
+  // Models face +Z in their own space; after placement that axis must point along the walk.
+  const agrees = (a, forward) => {
+    const [x0, z0] = before.get(a);
+    const dx = a.x - x0, dz = a.z - z0, len = Math.hypot(dx, dz);
+    return len < 1e-3 ? null : (forward.x * dx + forward.z * dz) / len > 0.5;
+  };
+  const m = new THREE.Matrix4(), fwd = new THREE.Vector3();
+  let checked = 0, i = 0;
+  const drawn = new Set(rigged.slots.filter((s) => s.agent).map((s) => s.agent));
+  for (const a of sys.agents) {
+    if (Math.hypot(a.x, a.z) > sys.o.radius) continue;
+    if (drawn.has(a)) continue;
+    sys.mesh.getMatrixAt(i++, m);
+    fwd.set(0, 0, 1).transformDirection(m);
+    const ok = agrees(a, fwd);
+    if (ok !== null) { assert.ok(ok, 'mannequin walks forwards'); checked++; }
+  }
+  for (const s of rigged.slots.filter((x) => x.agent)) {
+    s.obj.updateMatrixWorld(true);
+    fwd.set(0, 0, 1).transformDirection(s.obj.matrixWorld);
+    const ok = agrees(s.agent, fwd);
+    if (ok !== null) { assert.ok(ok, 'rigged model walks forwards'); checked++; }
+  }
+  assert.ok(checked > 5, `checked ${checked} walkers`);
+  rigged.dispose();
+});

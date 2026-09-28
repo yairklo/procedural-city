@@ -370,7 +370,9 @@ export class PedestrianSystem {
       const dx = a.x - p.x, dz = a.z - p.z;
       if (dx * dx + dz * dz > r2) continue;
       if (riggedAgents?.has(a)) continue; // drawn as a rigged model
-      this._q.setFromAxisAngle(this._up, a.yaw);
+      // Agent yaw points the model's -Z along the walk (see _placeLeader); the mannequin and the
+      // rigged model face +Z, so turn them half a circle.
+      this._q.setFromAxisAngle(this._up, a.yaw + Math.PI);
       this._s.set(a.scale * a.girth, a.scale, a.scale * a.girth);
       this._m.compose(this._v.set(a.x, a.y, a.z), this._q, this._s);
       mesh.setMatrixAt(n, this._m);

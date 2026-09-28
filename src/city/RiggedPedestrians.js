@@ -129,7 +129,7 @@ export class RiggedPedestrians {
       s.obj.visible = !!a;
       if (!a) continue;
       s.obj.position.set(a.x, a.y, a.z);
-      s.obj.rotation.set(0, a.yaw, 0);
+      s.obj.rotation.set(0, a.yaw + Math.PI, 0); // agent yaw points -Z along the walk; the model faces +Z
       s.obj.scale.setScalar(a.scale);
       // Walk when moving, idle when (nearly) standing; stride rate from the actual speed.
       const moving = Math.max(0, a.moving ?? 0);
