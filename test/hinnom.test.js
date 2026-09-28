@@ -55,6 +55,10 @@ test('hinnom data: Mishkenot rows, the windmill on its base, the pool and the va
   assert.ok(line[line.length - 1] > line[1] + 0.008, 'valley line ends east of its start');
   assert.ok(hinnom.lowRise.some((a) => a.name === 'Yemin Moshe' && a.shops === false && a.tileRoofMaxArea > 450));
   assert.ok(hinnom.lowRise.some((a) => a.name === 'Mount Zion' && a.approximate));
+  assert.ok(hinnom.lowRise.some((a) => a.name === 'Abu Tor' && a.approximate));
+  // Rock-cut burial sites on the slopes, from the map.
+  assert.ok(hinnom.sites.some((q) => /Ketef Hinnom/.test(q.name)));
+  assert.ok(hinnom.sites.some((q) => /Aceldama|Akeldama/.test(q.name)));
 });
 
 test('hinnom terrain: the valley falls ~110 m to the Kidron, far below the Old City; the pool is sunk below the dam road', () => {
@@ -113,6 +117,15 @@ test('hinnom geometry: one stone mesh plus two tree instances, within budget, fi
   for (const v of pos.array) assert.ok(Number.isFinite(v));
   assert.ok(layer.stats.olives > 300 && layer.stats.olives < 1200, `${layer.stats.olives} olives`);
   assert.ok(layer.stats.terraceSegments > 1000);
+  // Bare rock scarps on the steep south side, a few dozen tomb doorways near the burial sites.
+  assert.ok(layer.stats.scarpSegments > 200, `${layer.stats.scarpSegments} scarp segments`);
+  assert.ok(layer.stats.tombs >= 10 && layer.stats.tombs <= 80, `${layer.stats.tombs} tombs`);
+  assert.equal(layer.stats.sabil, true);
+  // The sabil stands on the dam, between the road and the pool (solid at head height).
+  const sabil = collision.boxes.find((b) => b?.ref === 'sabil');
+  const sc = { x: (sabil.minX + sabil.maxX) / 2, z: (sabil.minZ + sabil.maxZ) / 2 };
+  assert.ok(!pointInRings([projection.projectFlat(hinnom.pool.ring)], sc.x, sc.z), 'sabil outside the pool');
+  assert.ok(solidAt(sc.x, terrain.heightAt(sc.x, sc.z) + 1.7, sc.z));
   assert.equal(layer.stats.mishkenot, 2);
   // Mishkenot: solid in the middle of the long row at head height; the windmill's tower too.
   const long = orientedBox(projection.projectFlat(hinnom.mishkenot[0].ring));

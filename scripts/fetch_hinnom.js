@@ -10,10 +10,12 @@
 //   pool        Sultan's Pool: the reservoir (mapped as the amphitheatre plus the construction
 //               site at its north end), its floor levels and the dam road along its south end
 //   valley      the valley's thalweg (natural=valley), from the pool to the Kidron
+//   sites       rock-cut burial caves and tombs on the slopes (Ketef Hinnom, Akeldama, ...)
 //   slopes      a mask of open ground along the valley (not built on, no road, not in the pool):
 //               where the game lays dry-stone terraces and plants olive groves
 //   yeminMoshe  the neighbourhood outline: 2-3 storey stone houses with tile roofs
-//   lowRise     low-rise areas for the city generator: Yemin Moshe, and Mount Zion (approximate)
+//   lowRise     low-rise areas for the city generator: Yemin Moshe; Mount Zion and Abu Tor
+//               (approximate)
 //   patches     terrain patches: the pool's two floor levels
 //   replaces    OSM building ids the models replace (not generated again)
 //
@@ -47,6 +49,9 @@ export const ELEVATION = Object.freeze({ poolSouth: 724.5, poolNorth: 728.5 });
 // approximate box (lat, lon) from the pool's east side to the Old City wall, flagged as such.
 export const MOUNT_ZION = Object.freeze({ name: 'Mount Zion', approximate: true, floorsMin: 2, floorsMax: 3, shops: false,
   ring: [31.7736, 35.2266, 31.7736, 35.2312, 31.7688, 35.2312, 31.7688, 35.2266] });
+// Abu Tor, on the valley's south rim: 2-4 storey houses stepped down the slope (approximate box).
+export const ABU_TOR = Object.freeze({ name: 'Abu Tor', approximate: true, floorsMin: 2, floorsMax: 4, shops: false,
+  ring: [31.7693, 35.2268, 31.7693, 35.2328, 31.7640, 35.2328, 31.7640, 35.2268] });
 
 /** Slope mask: cell size (m) and how far from the valley line open ground counts. */
 export const SLOPES = Object.freeze({ cell: 6, reach: 125, buildingGap: 6, roadGap: 2 });
@@ -196,6 +201,12 @@ export function extractHinnom(osm, worldBBox) {
   const valleyWay = ways.find((w) => w.tags.natural === 'valley' && /Hinnom|הינום/.test(`${nameEn(w.tags)} ${w.tags.name ?? ''}`));
   const valley = valleyWay ? { id: `w${valleyWay.id}`, name: nameEn(valleyWay.tags), line: wayPts(osm, valleyWay) } : null;
 
+  // --- Burial caves and tombs on the slopes (rock-cut, Second Temple period) -------------------------
+  const sites = nodes
+    .filter((n) => n.tags.natural === 'cave_entrance' || n.tags.archaeological_site === 'tomb' || /Aceldama|Akeldama|חקל דמא|קבורה/.test(`${nameEn(n.tags)} ${n.tags.name ?? ''} ${n.tags.description ?? ''}`))
+    .filter((n) => n.lat > HINNOM_BBOX.south && n.lat < HINNOM_BBOX.north && n.lon > HINNOM_BBOX.west && n.lon < HINNOM_BBOX.east)
+    .map((n) => ({ id: `n${n.id}`, name: n.tags['name:en'] ?? n.tags.name ?? null, lat: round(n.lat), lon: round(n.lon) }));
+
   // --- Yemin Moshe -----------------------------------------------------------------------------------
   const ymWay = ways.find((w) => w.tags.place === 'neighbourhood' && /Yemin Moshe/.test(nameEn(w.tags)) && closed(w));
   const yeminMoshe = ymWay ? { id: `w${ymWay.id}`, name: 'Yemin Moshe', ring: wayPts(osm, ymWay) } : null;
@@ -262,10 +273,12 @@ export function extractHinnom(osm, worldBBox) {
     pool,
     valley,
     yeminMoshe,
+    sites,
     // Yemin Moshe: 2-3 storeys, and its (large, row-house) blocks mapped with a pitched roof get one.
     lowRise: [
       ...(yeminMoshe ? [{ name: 'Yemin Moshe', ring: yeminMoshe.ring, floorsMin: 2, floorsMax: 3, shops: false, tileRoofMaxArea: 1400 }] : []),
       { ...MOUNT_ZION, ring: [...MOUNT_ZION.ring] },
+      { ...ABU_TOR, ring: [...ABU_TOR.ring] },
     ],
     slopes,
     patches,

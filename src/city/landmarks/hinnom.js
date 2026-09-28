@@ -10,8 +10,12 @@
 //   pool        Sultan's Pool: the reservoir's retaining walls (vertical ashlar, the ground
 //               continuing behind them), the dam under the Hebron Road, the amphitheatre (stage
 //               at the foot of the dam, rows of green seats raked up toward the northern floor)
+//   sabil       the Ottoman drinking fountain on the dam (1536): a stone kiosk with a pointed-arch
+//               niche facing the road, a cornice and a shallow dome
 //   slopes      dry-stone terraces along the contours of the valley's open slopes, from the real
-//               terrain, and olive groves (with a few cypresses) on the open ground
+//               terrain, and olive groves (with a few cypresses) on the open ground; on the
+//               steep south side and around the mapped burial sites (Ketef Hinnom, Akeldama)
+//               bare rock scarps instead, with the dark doorways of rock-cut tombs
 //
 // The stone goes into one mesh with the landmark material (one draw call per pass); the trees
 // are two instanced meshes sharing the city's street-prop geometry and material. Everything
@@ -41,11 +45,15 @@ const C = {
   poolWallOld: 0xb7a888,
   rim: 0xb9ad93,
   terrace: 0xb8ab8f,
+  rock: 0xcbc3ad,
+  tomb: 0x1f1c19,
   seat: 0x2f6a4c,
   tier: 0xb9b3a6,
   stage: 0x3a3a3c,
   truss: 0x55595c,
 };
+
+const ROCK_TONES = [0xcfc8b6, 0xc2baa6, 0xd8d0bc, 0xb8b09c];
 
 const hash = (a, b = 0) => {
   const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
@@ -103,7 +111,7 @@ export function buildHinnom(data, { projection, terrain, collision, uniforms, pr
   const ground = (x, z) => terrain.heightAt(x, z);
   const project = (flat) => projection.projectFlat(flat);
   const at = (p) => projection.project(p.lat, p.lon);
-  const stats = { meshes: 0, triangles: 0, boxes: 0, olives: 0, cypresses: 0, terraceSegments: 0, seats: 0 };
+  const stats = { meshes: 0, triangles: 0, boxes: 0, olives: 0, cypresses: 0, terraceSegments: 0, scarpSegments: 0, tombs: 0, seats: 0 };
 
   const addBox = (b, kind = 'building', ref = 'hinnom') => {
     if (!(b.maxX > b.minX && b.maxY > b.minY && b.maxZ > b.minZ)) return;
@@ -350,7 +358,7 @@ export function buildHinnom(data, { projection, terrain, collision, uniforms, pr
     const split = projection.project(p.splitLat, p.ring[1]).z;
     const floorS = p.floor.south - terrain.datum, floorN = p.floor.north - terrain.datum;
     const floorAt = (z) => (z > split ? floorS : floorN);
-    const WALL = { thick: 1.6, parapet: 0.9, rim: 15 };
+    const WALL = { thick: 1.6, parapet: 0.9, rim: 15, maxH: 10, step: 1.2 };
     // Retaining walls: every edge, in ~4 m panels, from below the floor up to the ground behind
     // (sampled beyond the lowered edge band), with a parapet; behind the wall a rim strip that
     // follows the true ground covers the terrain mesh's ramp down to the floor.
@@ -366,8 +374,11 @@ export function buildHinnom(data, { projection, terrain, collision, uniforms, pr
         const s0 = (L * k) / panels, s1 = (L * (k + 1)) / panels;
         const x0 = ax + ux * s0, z0 = az + uz * s0, x1 = ax + ux * s1, z1 = az + uz * s1;
         const behind = (x, z, d) => ground(x + nx * d, z + nz * d);
-        const f0 = floorAt(z0), f1 = floorAt(z1);
-        const t0 = Math.max(f0 + 3, behind(x0, z0, 3.5)), t1 = Math.max(f1 + 3, behind(x1, z1, 3.5));
+        const f0 = floorAt(z0), f1 = floorAt(z1), fm = Math.min(f0, f1);
+        // Level top per panel, stepping with the ground behind (at most WALL.maxH over the floor;
+        // above that the bank continues as earth).
+        const want = (behind(x0, z0, 3.5) + behind(x1, z1, 3.5)) / 2;
+        const t0 = fm + Math.min(WALL.maxH, Math.max(3, Math.round((want - fm) / WALL.step) * WALL.step)), t1 = t0;
         const old = hash(i, k) > 0.55;
         m.paint(old ? C.poolWallOld : C.poolWall, 0.62, 1.3, STYLE.ashlar);
         // Inner face (toward the pool), top, parapet.
@@ -377,6 +388,11 @@ export function buildHinnom(data, { projection, terrain, collision, uniforms, pr
         m.quad([x0, t0 + WALL.parapet, z0], [x1, t1 + WALL.parapet, z1], [x1 + nx * 0.5, t1 + WALL.parapet, z1 + nz * 0.5], [x0 + nx * 0.5, t0 + WALL.parapet, z0 + nz * 0.5], [0, 1, 0]);
         m.wall(x0, z0, x1, z1, t0, t1, t0 + WALL.parapet, t1 + WALL.parapet, [-nx, 0, -nz]);
         m.wall(x0 + nx * 0.5, z0 + nz * 0.5, x1 + nx * 0.5, z1 + nz * 0.5, t0, t1, t0 + WALL.parapet, t1 + WALL.parapet, [nx, 0, nz]);
+        // Ends of the panel (the steps between neighbouring panels' tops).
+        m.paint(old ? C.poolWallOld : C.poolWall, 0.62, 1.3, STYLE.ashlar);
+        for (const [ex, ez, sg] of [[x0, z0, -1], [x1, z1, 1]]) {
+          m.quad([ex, fm, ez], [ex + nx * WALL.thick, fm, ez + nz * WALL.thick], [ex + nx * WALL.thick, t0 + WALL.parapet, ez + nz * WALL.thick], [ex, t0 + WALL.parapet, ez], [ux * sg, 0, uz * sg]);
+        }
         m.paint(C.rim, 1, 1, STYLE.paving);
         m.quad([x0 + nx * 0.5, t0 + 0.02, z0 + nz * 0.5], [x1 + nx * 0.5, t1 + 0.02, z1 + nz * 0.5], [ox1, t1 + 0.02, oz1], [ox0, t0 + 0.02, oz0], [0, 1, 0]);
         // Rim: 3 bands out to WALL.rim metres, each vertex on the true ground (a hair below).
@@ -474,6 +490,39 @@ export function buildHinnom(data, { projection, terrain, collision, uniforms, pr
       }
     }
     stats.pool = { rows, vSplit: +vSplit.toFixed(1) };
+
+    // The sabil on the dam: between the road and the pool wall, its niche facing the road.
+    const d = p.dam?.line;
+    if (d && d.length >= 4) {
+      const k = Math.max(2, Math.floor(d.length / 4) * 2);
+      const a = at({ lat: d[k - 2], lon: d[k - 1] }), b = at({ lat: d[k], lon: d[k + 1] });
+      const L = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+      const ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
+      let nx = -uz, nz = ux; // toward the pool (north, -z)
+      if (nz > 0) { nx = -nx; nz = -nz; }
+      const cx = (a.x + b.x) / 2 + nx * 8.8, cz = (a.z + b.z) / 2 + nz * 8.8;
+      const g = ground(cx - nx * 1.4, cz - nz * 1.4);
+      const SB = { hl: 1.9, hw: 1.3, h: 4.4 };
+      m.paint(C.mill, 0.38, 0.7, STYLE.ashlar);
+      m.orientedBox(cx, cz, ux, uz, SB.hl, SB.hw, g - 1.5, g + SB.h);
+      m.paint(C.dressed, 0.3, 0.6, STYLE.ashlar);
+      m.orientedBox(cx, cz, ux, uz, SB.hl + 0.15, SB.hw + 0.15, g + SB.h, g + SB.h + 0.35);
+      m.paint(C.cap, 1, 1, STYLE.lead);
+      m.dome(cx, cz, 1.25, g + SB.h + 0.35, 0.8, { seg: 12, rings: 3 });
+      // Niche on the road side: a pointed arch panel in a dressed frame, and a basin below.
+      const fx = -nx, fz = -nz;
+      const ox = cx - ux * 0.75 + fx * (SB.hw + 0.01), oz = cz - uz * 0.75 + fz * (SB.hw + 0.01);
+      const P = (sv, y, off) => [ox + ux * sv + fx * off, y, oz + uz * sv + fz * off];
+      const poly = (pts, off) => { for (let i = 1; i + 1 < pts.length; i++) m.tri(P(...pts[0], off), P(...pts[i], off), P(...pts[i + 1], off), [fx, 0, fz]); };
+      m.paint(C.dressed, 0.3, 0.5, STYLE.ashlar);
+      poly(archOutline(1.9, g + 0.6, g + 2.7, 6).map(([sv, y]) => [sv - 0.2, y]), 0.015);
+      m.paint(0x8f8672, 0.3, 0.5, STYLE.ashlar);
+      poly(archOutline(1.5, g + 0.8, g + 2.6, 6), 0.03);
+      m.paint(C.dressed, 0.3, 0.6, STYLE.ashlar);
+      m.orientedBox(cx + fx * (SB.hw + 0.35), cz + fz * (SB.hw + 0.35), ux, uz, 0.8, 0.35, g - 0.2, g + 0.7);
+      orientedCollider(cx, cz, ux, uz, SB.hl + 0.15, SB.hw + 0.5, g - 1.5, g + SB.h + 1.1, 'building', 'sabil');
+      stats.sabil = true;
+    }
   }
 
   // --- Terraces and groves on the valley slopes ---------------------------------------------------
@@ -485,6 +534,21 @@ export function buildHinnom(data, { projection, terrain, collision, uniforms, pr
     const o = at(S.origin);
     const cell = S.cell;
     const LEVEL = 2.4; // metres between terrace walls
+    const ROCK_LEVEL = 3.2; // between rock scarps
+    const sites = (data.sites ?? []).map((q) => at(q));
+    const line = data.valley ? project(data.valley.line) : [];
+    // Signed distance to the valley line: > 0 on its right (south, for a line running east).
+    const sideOfLine = (x, z) => {
+      let best = Infinity, side = 0;
+      for (let i = 0; i + 3 < line.length; i += 2) {
+        const ax = line[i], az = line[i + 1], ex = line[i + 2] - ax, ez = line[i + 3] - az;
+        const t = Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez || 1)));
+        const dd = Math.hypot(x - ax - ex * t, z - az - ez * t);
+        if (dd < best) { best = dd; side = Math.sign(ex * (z - az) - ez * (x - ax)); }
+      }
+      return best * side;
+    };
+    const nearSite = (x, z, r) => sites.some((q) => Math.hypot(q.x - x, q.z - z) < r);
     // Heights on the cell corners (shared by neighbouring cells, so contours join up).
     const H = new Float32Array((S.cols + 1) * (S.rows + 1));
     for (let r = 0; r <= S.rows; r++) for (let c = 0; c <= S.cols; c++) H[r * (S.cols + 1) + c] = ground(o.x + c * cell, o.z + r * cell);
@@ -504,10 +568,18 @@ export function buildHinnom(data, { projection, terrain, collision, uniforms, pr
           const kind = k < 0.012 ? 'cypress' : 'olive';
           trees[kind].push({ x, z, y: ground(x, z) - 0.1, s: kind === 'olive' ? 0.8 + 0.5 * hash(r, c) : 0.85 + 0.3 * hash(r, c), ry: hash(c, r) * Math.PI * 2 });
         }
+        // Rock: the steep south side of the valley below the rim, and around the burial sites.
+        const cxm = x0 + cell / 2, czm = z0 + cell / 2;
+        const sd = line.length ? sideOfLine(cxm, czm) : 0;
+        const rocky = (grade > 0.42 && sd > 8 && sd < 95) || (grade > 0.25 && nearSite(cxm, czm, 55));
         // Terraces: only on real slopes (not the valley floor, not cliffs), in patches.
         if (grade < 0.1 || grade > 1.1) continue;
-        if (hash(Math.floor(c / 4) * 1.7, Math.floor(r / 4) * 2.9) < 0.22) continue;
-        for (let lvl = Math.ceil(lo / LEVEL) * LEVEL; lvl < hi; lvl += LEVEL) {
+        if (!rocky && hash(Math.floor(c / 4) * 1.7, Math.floor(r / 4) * 2.9) < 0.22) continue;
+        const step = rocky ? ROCK_LEVEL : LEVEL;
+        // Rock: long, shallow beds (few joints) in a few weathered tones; terraces: small stones.
+        if (rocky) m.paint(ROCK_TONES[Math.floor(hash(c * 0.61, r * 0.37) * ROCK_TONES.length)], 0.8, 4.5, STYLE.ashlar);
+        else m.paint(C.terrace, 0.28, 0.42, STYLE.ashlar);
+        for (let lvl = Math.ceil(lo / step) * step; lvl < hi; lvl += step) {
           // Marching squares on this cell: crossing points on its edges.
           const P = [[x0, z0], [x0 + cell, z0], [x0 + cell, z0 + cell], [x0, z0 + cell]];
           const pts = [];
@@ -525,6 +597,30 @@ export function buildHinnom(data, { projection, terrain, collision, uniforms, pr
             const gx = (hs[1] + hs[2] - hs[0] - hs[3]) / 2, gz = (hs[2] + hs[3] - hs[0] - hs[1]) / 2; // uphill gradient
             const gl = Math.hypot(gx, gz) || 1;
             const dx = -gx / gl, dz = -gz / gl;
+            if (rocky) {
+              // A bare scarp standing out of the slope: a 1.6-2.4 m face on the contour, and a
+              // shelf of rock running back uphill until it meets the ground (the smooth DEM has
+              // no steps of its own).
+              const hA = 1.6 + 0.8 * hash(ax * 0.7, az * 0.3), hB = 1.6 + 0.8 * hash(bx * 0.7, bz * 0.3);
+              const back = Math.min(5, Math.max(1.2, (hA + hB) / 2 / Math.max(grade, 0.2)));
+              const A2 = [ax - dx * back, az - dz * back], B2 = [bx - dx * back, bz - dz * back];
+              m.quad([ax, lvl - 0.6, az], [bx, lvl - 0.6, bz], [bx, lvl + hB, bz], [ax, lvl + hA, az], [dx, 0, dz]);
+              m.quad([ax, lvl + hA, az], [bx, lvl + hB, bz], [B2[0], lvl + hB + 0.1, B2[1]], [A2[0], lvl + hA + 0.1, A2[1]], [0, 1, 0]);
+              stats.scarpSegments++;
+              // Rock-cut tomb doorways near the burial sites.
+              if (L > 1.6 && nearSite(ax, az, 60) && hash(ax * 1.3 + lvl, az * 0.9) < 0.1) {
+                const mx = (ax + bx) / 2 + dx * 0.03, mz = (az + bz) / 2 + dz * 0.03;
+                const tx = (bx - ax) / L, tz = (bz - az) / L, yb = lvl - 0.25;
+                const Q = (s2, y, off = 0) => [mx + tx * s2 + dx * off, y, mz + tz * s2 + dz * off];
+                m.paint(0xdad3c0, 1, 1, STYLE.plain);
+                m.quad(Q(-0.62, yb - 0.1), Q(0.62, yb - 0.1), Q(0.62, yb + 1.32), Q(-0.62, yb + 1.32), [dx, 0, dz]);
+                m.paint(C.tomb, 1, 1, STYLE.plain);
+                m.quad(Q(-0.45, yb, 0.02), Q(0.45, yb, 0.02), Q(0.45, yb + 1.12, 0.02), Q(-0.45, yb + 1.12, 0.02), [dx, 0, dz]);
+                m.paint(ROCK_TONES[0], 0.8, 4.5, STYLE.ashlar);
+                stats.tombs++;
+              }
+              continue;
+            }
             const T = 0.45, top = lvl + 0.35;
             const A = [ax, az], B = [bx, bz];
             const A2 = [ax + dx * T, az + dz * T], B2 = [bx + dx * T, bz + dz * T];
