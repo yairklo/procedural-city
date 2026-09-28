@@ -204,7 +204,9 @@ export function extractLandmarks(osm) {
   // Outer outline only: the relation's inner ring (the Marwani mosque garden) is excluded from
   // the land use, but physically it lies on the esplanade too.
   if (tm) patches.push({ name: 'Temple Mount esplanade', mode: 'raise', elevation: ELEVATION.esplanade, rings: relRings(tm, 'outer') });
-  if (plaza) patches.push({ name: 'Western Wall Plaza', mode: 'lower', elevation: ELEVATION.plaza, rings: [openRing(wayPts(plaza))] });
+  // The ground around the plaza blends back to the DEM over 60 m: it rises gently to the
+  // Jewish Quarter and Chain Street, and stays near plaza level toward Dung Gate.
+  if (plaza) patches.push({ name: 'Western Wall Plaza', mode: 'lower', elevation: ELEVATION.plaza, falloff: 60, rings: [openRing(wayPts(plaza))] });
 
   return {
     format: 'landmarks-v1',

@@ -8,6 +8,7 @@
 //   node scripts/fetch_elevation.js --source open-elevation   # skip Open-Meteo
 //   node scripts/fetch_elevation.js --smooth 2.5              # Gaussian sigma in grid cells (0 = off)
 //   node scripts/fetch_elevation.js --mode points             # DEM control points (see below)
+//   node scripts/fetch_elevation.js --mode points --source terrarium   # SRTM 1" (~30 m) from AWS Terrain Tiles
 //   node scripts/fetch_elevation.js --bbox 31.765,35.205,31.79,35.253   # south,west,north,east
 //
 // Sources, tried in order:
@@ -130,6 +131,56 @@ async function fetchOpenElevation(points) {
 }
 
 const FETCHERS = { 'open-meteo': fetchOpenMeteo, 'open-elevation': fetchOpenElevation };
+
+/**
+ * DEM control points from the AWS Terrain Tiles (terrarium; SRTM at 1 arc-second, ~30 x 26 m
+ * here): one sample per SRTM pixel centre (integer arc-seconds) over the bbox plus a margin,
+ * the same dem-points-v1 layout as fetchDemPoints. Three times finer than Copernicus GLO-90:
+ * it resolves the Tyropoeon valley south of the Western Wall plaza, the Ophel and the Kidron.
+ */
+export async function fetchTerrariumPoints(bbox, { zoom = 14, fetchedAt = new Date().toISOString() } = {}) {
+  const { sampler } = await import('./terrarium.js');
+  const at = sampler(zoom);
+  const step = ARCSEC;
+  const kLat0 = Math.floor(bbox.south / step) - POINTS_MARGIN, kLat1 = Math.ceil(bbox.north / step) + POINTS_MARGIN;
+  const kLon0 = Math.floor(bbox.west / step) - POINTS_MARGIN, kLon1 = Math.ceil(bbox.east / step) + POINTS_MARGIN;
+  const width = kLon1 - kLon0 + 1, height = kLat1 - kLat0 + 1;
+  const north = kLat1 * step, west = kLon0 * step;
+  const values = new Array(width * height);
+  for (let row = 0; row < height; row++) {
+    const lat = north - row * step;
+    const line = await Promise.all(Array.from({ length: width }, (_, col) => at(lat, west + col * step)));
+    for (let col = 0; col < width; col++) values[row * width + col] = line[col];
+    if (row % 10 === 0) process.stdout.write(`\r[elevation] terrarium rows ${row + 1}/${height}`);
+  }
+  process.stdout.write('\n');
+  const min = Math.min(...values), max = Math.max(...values);
+  if (min < 300 || max > 1200) throw new Error(`implausible elevation range ${min}..${max} m`);
+  const midLat = ((bbox.north + bbox.south) / 2) * (Math.PI / 180);
+  return {
+    format: 'dem-points-v1',
+    source: 'AWS Terrain Tiles (terrarium, SRTM 1 arc-second)',
+    license: 'Public domain (SRTM); tiles by Mapzen / AWS Open Data',
+    attribution: 'Elevation data: SRTM courtesy of NASA / USGS, via Mapzen / AWS Terrain Tiles',
+    fetchedAt,
+    bbox: { ...bbox },
+    lattice: {
+      north: round(north, 8), west: round(west, 8), stepLatDeg: step, stepLonDeg: step,
+      stepMeters: { lat: round(step * 111320, 1), lon: round(step * 111320 * Math.cos(midLat), 1) },
+      measured: false,
+    },
+    width,
+    height,
+    margin: POINTS_MARGIN,
+    layout: 'row-major; row 0 = north; lat = lattice.north - row * stepLatDeg, lon = lattice.west + col * stepLonDeg',
+    meaning: 'SRTM samples at 1 arc-second pixel centres (bilinear from terrarium tiles); use as control points for Catmull-Rom / cubic interpolation',
+    units: 'meters above sea level',
+    minElevation: round(min, 1),
+    maxElevation: round(max, 1),
+    verification: { method: 'none (fixed SRTM lattice)', checked: 0, matched: 0 },
+    values: values.map((v) => round(v, 1)),
+  };
+}
 
 const mod = (v, m) => ((v % m) + m) % m;
 
@@ -350,7 +401,7 @@ async function main(argv) {
   if (!['grid', 'points'].includes(mode)) throw new Error('--mode must be grid or points');
   const out = arg('--out') ?? (mode === 'points' ? POINTS_FILE : OUT_FILE);
   const source = arg('--source') ?? 'auto';
-  if (!['auto', 'open-meteo', 'open-elevation'].includes(source)) throw new Error('--source must be auto, open-meteo or open-elevation');
+  if (!['auto', 'open-meteo', 'open-elevation', 'terrarium'].includes(source)) throw new Error('--source must be auto, open-meteo, open-elevation or terrarium');
   const smooth = Number(arg('--smooth') ?? 2.5);
   let bbox = mode === 'points' ? WORLD_BBOX : JERUSALEM_BBOX;
   if (arg('--bbox')) {
@@ -360,6 +411,14 @@ async function main(argv) {
   }
   if (!(smooth >= 0)) throw new Error('--smooth must be >= 0');
 
+  if (mode === 'points' && source === 'terrarium') {
+    const doc = await fetchTerrariumPoints(bbox);
+    await mkdir(dirname(out), { recursive: true });
+    const json = JSON.stringify(doc);
+    await writeFile(out, json);
+    console.log(`[elevation] wrote ${out} (${(json.length / 1024).toFixed(0)} KB): ${doc.width} x ${doc.height} SRTM points, ${doc.minElevation}..${doc.maxElevation} m`);
+    return;
+  }
   if (mode === 'points') {
     const order = source === 'auto' ? ['open-meteo', 'open-elevation'] : [source];
     let doc, lastError;

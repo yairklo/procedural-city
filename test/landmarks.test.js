@@ -39,21 +39,29 @@ test('landmarks: the plaza lies 19 m below the esplanade, and the Western Wall s
   lm.dispose();
 });
 
-test('landmarks: terrain meshes keep patch ramps off the plaza and in front of no wall', () => {
+test('landmarks: the plaza is flat and the ground around it rises smoothly (no cliff, no ramp)', () => {
   const plaza = terrain.patches.find((p) => p.mode === 'lower');
+  assert.ok(plaza.falloff > 0, 'the plaza blends into the surroundings');
   const b = plaza.bounds, spacing = 8;
-  // Sample points inside the plaza, and just outside it (within one mesh spacing): the mesh
-  // must stay at plaza level there, so its ramp starts beyond the terraces' face.
-  let checked = 0;
-  for (let x = b.minX - spacing; x <= b.maxX + spacing; x += 2) {
-    for (let z = b.minZ - spacing; z <= b.maxZ + spacing; z += 2) {
-      const inside = pointInRings(plaza.rings, x, z), near = distanceToEdges(plaza.rings, x, z) < spacing;
-      if (!inside && !near) continue;
-      assert.equal(terrain.meshHeightAt(x, z, spacing), plaza.y);
-      checked++;
+  let inside = 0, steps = 0;
+  for (let x = b.minX - 70; x <= b.maxX + 70; x += 2) {
+    for (let z = b.minZ - 70; z <= b.maxZ + 70; z += 2) {
+      const h = terrain.heightAt(x, z);
+      if (pointInRings(plaza.rings, x, z)) {
+        assert.equal(h, plaza.y);
+        assert.equal(terrain.meshHeightAt(x, z, spacing), plaza.y, 'the mesh is flat on the plaza too');
+        inside++;
+      } else if (distanceToEdges(plaza.rings, x, z) < 60) {
+        // Within the falloff: never a jump of more than 3 m over 2 m (no retaining cliff).
+        const n = terrain.heightAt(x + 2, z);
+        if (!pointInRings(terrain.patches.find((p) => p.mode === 'raise').rings, x + 2, z)) {
+          assert.ok(Math.abs(n - h) < 3, `step of ${(n - h).toFixed(1)} m at ${x.toFixed(0)}, ${z.toFixed(0)}`);
+        }
+        steps++;
+      }
     }
   }
-  assert.ok(checked > 100);
+  assert.ok(inside > 100 && steps > 100);
 });
 
 test('landmarks: city walls leave openings where streets pass and replace the generic buildings', () => {

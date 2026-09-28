@@ -138,7 +138,7 @@ export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeS
       minX = Math.min(minX, rings[0][i]); maxX = Math.max(maxX, rings[0][i]);
       minZ = Math.min(minZ, rings[0][i + 1]); maxZ = Math.max(maxZ, rings[0][i + 1]);
     }
-    return { name: p.name, mode: p.mode, y: p.elevation - datum, rings, bounds: { minX, maxX, minZ, maxZ } };
+    return { name: p.name, mode: p.mode, y: p.elevation - datum, falloff: p.falloff ?? 0, rings, bounds: { minX, maxX, minZ, maxZ } };
   });
   const within = (p, x, z, pad = 0) => x >= p.bounds.minX - pad && x <= p.bounds.maxX + pad && z >= p.bounds.minZ - pad && z <= p.bounds.maxZ + pad;
   // Edge tolerance: mapped features that end exactly on a patch edge (the plaza's own paving,
@@ -155,10 +155,26 @@ export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeS
     return null;
   };
 
+  // A lowered patch with a falloff blends back into the DEM over `falloff` meters outside its
+  // edge (a smooth basin, e.g. the ground rising from the Western Wall plaza to the Jewish
+  // Quarter), instead of a step. Raised patches take precedence.
+  const falloffAt = (x, z) => {
+    for (const p of patches) {
+      if (p.mode !== 'lower' || !(p.falloff > 0) || !within(p, x, z, p.falloff)) continue;
+      const d = distanceToEdges(p.rings, x, z);
+      if (d >= p.falloff) continue;
+      const dem = demHeightAt(x, z);
+      return p.y + (dem - p.y) * smoothstep(EDGE_TOL, p.falloff, d);
+    }
+    return null;
+  };
+
   function heightAt(x, z) {
     if (patches.length) {
       const p = patchAt(x, z);
       if (p) return p.y;
+      const f = falloffAt(x, z);
+      if (f !== null) return f;
     }
     return demHeightAt(x, z);
   }
@@ -170,10 +186,11 @@ export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeS
       // outside the patch (under the retaining terraces built around it).
       if (margin > 0) {
         for (const q of patches) {
-          if (q.mode === 'lower' && within(q, x, z, margin) && distanceToEdges(q.rings, x, z) < margin) return q.y;
+          if (q.mode === 'lower' && !(q.falloff > 0) && within(q, x, z, margin) && distanceToEdges(q.rings, x, z) < margin) return q.y;
         }
       }
-      return demHeightAt(x, z);
+      const f = patches.length ? falloffAt(x, z) : null;
+      return f !== null ? f : demHeightAt(x, z); // a falloff is smooth: the mesh just follows it
     }
     if (p.mode !== 'raise' || margin <= 0 || distanceToEdges(p.rings, x, z) >= margin) return p.y;
     // Edge band of a raised patch: take the level just outside it.
