@@ -14,6 +14,7 @@ import { FreeCamera } from './player/FreeCamera.js';
 import { RoadNetwork } from './city/RoadNetwork.js';
 import { PedestrianSystem } from './city/PedestrianSystem.js';
 import { RiggedPedestrians } from './city/RiggedPedestrians.js';
+import { buildLandmarks } from './city/landmarks/LandmarkLayer.js';
 import { TrafficSystem } from './city/TrafficSystem.js';
 import { WindAudio } from './audio/WindAudio.js';
 import { BenchmarkHUD } from './ui/BenchmarkHUD.js';
@@ -155,13 +156,21 @@ const getJson = async (url, { optional = false } = {}) => {
   throw new Error(`${url}: HTTP ${res.status}`);
 };
 
+/** @type {ReturnType<typeof buildLandmarks> | null} */
+let landmarkLayer = null;
+
 async function loadWorld() {
-  const [manifest, dem, legacy] = await Promise.all([
+  const [manifest, dem, legacy, landmarks] = await Promise.all([
     getJson(`${DATA}tiles/manifest.json`),
     getJson(`${DATA}tiles/dem_points.json`),
     // The old city-centre file stays as a "legacy" source until tiles cover it.
     getJson(`${DATA}jerusalem_data.json`, { optional: true }),
+    // Old City landmarks (walls, gates, Western Wall, Tower of David, Holy Sepulchre).
+    getJson(`${DATA}landmarks.json`, { optional: true }),
   ]);
+  // Landmark terrain patches (the esplanade, the plaza below the Western Wall) go into the
+  // elevation data itself, so the main thread and the cell worker build the same terrain.
+  if (landmarks?.patches?.length) dem.patches = landmarks.patches;
   // Cell generation and geometry building run in a web worker (no hitches when cells stream
   // in); if workers are unavailable the world falls back to building on the main thread.
   let backend = null;
@@ -171,8 +180,23 @@ async function loadWorld() {
   } catch (err) {
     console.warn('[world] no web worker, building cells on the main thread:', err.message);
   }
-  world = new TileWorld({ manifest, dem, legacy, loadTile: (file) => getJson(`${DATA}tiles/${file}`), backend });
+  world = new TileWorld({
+    manifest, dem, legacy, loadTile: (file) => getJson(`${DATA}tiles/${file}`), backend,
+    // Buildings the landmark models replace are not generated from the map data.
+    // Inside the Old City, buildings without a mapped height are low-rise (2-3 storeys).
+    options: landmarks ? { city: { excludeBuildings: landmarks.replaces ?? [], lowRiseAreas: landmarks.oldCity ? [landmarks.oldCity] : [] } } : {},
+  });
   scene.add(world.group);
+  if (landmarks) {
+    try {
+      landmarkLayer = buildLandmarks(landmarks, { projection: world.projection, terrain: world.terrain, collision: world.collision, uniforms: world.uniforms });
+      lighting.setupMaterial(landmarkLayer.material);
+      scene.add(landmarkLayer.group);
+      console.info('[landmarks]', landmarkLayer.stats);
+    } catch (err) {
+      console.error('[landmarks] could not be built:', err);
+    }
+  }
   lighting.setupMaterial(world.groundMaterial);
   lighting.setupMaterial(world.outerMaterial);
   for (const m of world.materials.list) lighting.setupMaterial(m);
@@ -214,6 +238,7 @@ async function loadWorld() {
   // Handy for debugging from the devtools console.
   window.world = world;
   window.debug = {
+    landmarks: landmarkLayer,
     camera, playerCamera, player, proxy, character, scene, renderer, lighting, post, world, pedestrians, traffic, freeCam, wind,
     setNight: (v) => { night = nightTarget = v; applyLook(v); },
   };

@@ -29,6 +29,18 @@ export const DEFAULT_CITY_OPTIONS = Object.freeze({
   osm: null,
   /** Parsed public/data/jerusalem_elevation.json (optional; flat ground without it). */
   elevation: null,
+  /**
+   * OSM building ids not to generate, because a custom model replaces them (landmarks.json
+   * `replaces`: the Western Wall, the Citadel, the Holy Sepulchre, gate buildings). A relation
+   * id also drops its split parts ('r123' drops 'r123-0', 'r123-1').
+   */
+  excludeBuildings: [],
+  /**
+   * Areas where buildings without a mapped height are low-rise:
+   * [{ ring: [lat, lon, ...], floorsMin, floorsMax }] (landmarks.json `oldCity`: 2-3 storeys
+   * inside the Old City walls instead of the modern city's defaultFloorsMin-Max).
+   */
+  lowRiseAreas: [],
   /** How far building walls continue below the lowest ground point under them (hides gaps on slopes). */
   foundationDepth: 0.6,
   name: 'Jerusalem · City Center',
@@ -235,7 +247,10 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
   const ac = [];
   let heightFromOsm = 0;
 
+  const excluded = new Set(o.excludeBuildings ?? []);
+  const lowRise = (o.lowRiseAreas ?? []).map((a) => ({ rings: [proj.projectFlat(a.ring)], o: { ...o, defaultFloorsMin: a.floorsMin ?? 2, defaultFloorsMax: a.floorsMax ?? 3 } }));
   for (const src of osm.buildings ?? []) {
+    if (excluded.size && (excluded.has(src.id) || excluded.has(String(src.id).split('-')[0]))) continue;
     const rings = projectRings(src.rings);
     if (!rings) continue;
     const area = footprintArea(rings);
@@ -243,7 +258,8 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
     const centroid = ringCentroid(rings[0]);
     if (!keep('building', centroid.x, centroid.z)) continue;
     const tags = src.tags ?? {};
-    const h = resolveHeight(tags, area, src.id, o);
+    const area0 = lowRise.length ? lowRise.find((a) => pointInRings(a.rings, centroid.x, centroid.z)) : null;
+    const h = resolveHeight(tags, area, src.id, area0 ? area0.o : o);
     if (h.source !== 'default') heightFromOsm++;
 
     const box = ringsBounds(rings);
@@ -1044,7 +1060,8 @@ export function terrainGeometry(terrain, rect, spacing, yOffset = 0, skirt = 0) 
     for (let i = 0; i <= nx; i++, k += 3) {
       const x = rect.minX + i * sx, z = rect.minZ + j * sz;
       pos[k] = x;
-      pos[k + 1] = terrain.heightAt(x, z) + yOffset;
+      // meshHeightAt keeps the ramps of raised terrain patches under the patch (see terrain.js).
+      pos[k + 1] = (terrain.meshHeightAt ? terrain.meshHeightAt(x, z, Math.max(sx, sz)) : terrain.heightAt(x, z)) + yOffset;
       pos[k + 2] = z;
       const n = terrainNormal(terrain, x, z);
       nrm[k] = n[0]; nrm[k + 1] = n[1]; nrm[k + 2] = n[2];

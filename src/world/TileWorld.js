@@ -268,8 +268,16 @@ export class TileWorld {
     );
     surround.name = 'TerrainSurroundings';
     surround.receiveShadow = true;
+    // The flat outer ground is a frame around the surroundings mesh, not a plane under the
+    // whole world: at meanEdge it would otherwise cover every place lower than that when seen
+    // from above (the Hinnom and Kidron valleys, the Western Wall plaza).
+    const S = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) / 2 + r + 4000;
+    const shape = new THREE.Shape([new THREE.Vector2(-S, -S), new THREE.Vector2(S, -S), new THREE.Vector2(S, S), new THREE.Vector2(-S, S)]);
+    // Shape y is -z after rotateX(-90°); the hole overlaps the surroundings mesh by 2 m.
+    const hx0 = b.minX - r + 2, hx1 = b.maxX + r - 2, hz0 = b.minZ - r + 2, hz1 = b.maxZ + r - 2;
+    shape.holes.push(new THREE.Path([new THREE.Vector2(hx0, -hz0), new THREE.Vector2(hx0, -hz1), new THREE.Vector2(hx1, -hz1), new THREE.Vector2(hx1, -hz0)]));
     const plane = new THREE.Mesh(
-      new THREE.PlaneGeometry(b.maxX - b.minX + 2 * r + 8000, b.maxZ - b.minZ + 2 * r + 8000).rotateX(-Math.PI / 2).translate(0, t.meanEdge - 0.4, 0),
+      new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2).translate(0, t.meanEdge - 0.4, 0),
       this.outerMaterial,
     );
     plane.name = 'OuterGround';

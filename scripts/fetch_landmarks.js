@@ -5,8 +5,10 @@
 //
 //   walls        Suleiman's city walls and the Temple Mount enclosure (barrier=city_wall)
 //   gates        the city gates (Jaffa, New, Damascus, Herod's, Lions', Golden, Dung, Zion)
+//   crossings    where ground-level streets pass through the walls (openings are cut there)
 //   westernWall  the Western Wall's outline (building=wall)
 //   plaza        the Western Wall Plaza
+//   prayer       the men's and women's prayer sections (positions); mughrabi: the Mughrabi Gate
 //   templeMount  the compound's outline (for the esplanade platform)
 //   citadel      the Tower of David (castle outline, minaret position)
 //   sepulchre    the Church of the Holy Sepulchre with its mapped building parts (heights,
@@ -132,6 +134,72 @@ export function extractLandmarks(osm) {
     sepulchre = { id: `w${church.id}`, ring, parts };
   }
 
+  // Western Wall prayer sections (their split places the partition) and the Mughrabi Gate
+  // (the top of the bridge from the plaza up to the esplanade).
+  const section = (re) => {
+    const n = nodes.find((x) => re.test(x.tags['name:en'] ?? ''));
+    return n ? { lat: round(n.lat), lon: round(n.lon) } : null;
+  };
+  const prayer = { men: section(/Western Wall men/), women: section(/Western Wall women/) };
+  const mughrabiWay = ways.find((w) => /Mughrabi Gate/.test(nameEn(w)) && w.tags.building);
+  const mughrabi = mughrabiWay ? { id: `w${mughrabiWay.id}`, ring: openRing(wayPts(mughrabiWay)) } : null;
+
+  // Where streets pass through the walls: openings are cut there (gates, the breach beside
+  // Jaffa Gate). Ground-level ways only (no tunnels or bridges).
+  const ROAD_WIDTH = { primary: 9, secondary: 9, tertiary: 8, unclassified: 7, residential: 7, service: 5, pedestrian: 5, living_street: 5, footway: 3, path: 3, steps: 3, cycleway: 3 };
+  const crossings = [];
+  const segX = (a, b, c, d) => {
+    // Intersection of segments ab and cd in (lon, lat), or null.
+    const r = [b.lon - a.lon, b.lat - a.lat], q = [d.lon - c.lon, d.lat - c.lat];
+    const den = r[0] * q[1] - r[1] * q[0];
+    if (Math.abs(den) < 1e-15) return null;
+    const t = ((c.lon - a.lon) * q[1] - (c.lat - a.lat) * q[0]) / den, u = ((c.lon - a.lon) * r[1] - (c.lat - a.lat) * r[0]) / den;
+    return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? { lat: a.lat + t * r[1], lon: a.lon + t * r[0] } : null;
+  };
+  const wallGeoms = walls.map((w) => ({ id: w.id, g: wayGeometry(osm, osm.ways.get(Number(w.id.slice(1)))) }));
+  for (const road of ways) {
+    const t = road.tags;
+    const width = ROAD_WIDTH[t.highway];
+    if (!width || t.tunnel === 'yes' || t.bridge === 'yes' || Number(t.layer ?? 0) !== 0 || t.covered === 'yes') continue;
+    // Pedestrian squares are mapped as closed areas; their outlines are not passages.
+    if (road.refs[0] === road.refs[road.refs.length - 1] && (t.area === 'yes' || t.place || t.highway === 'pedestrian')) continue;
+    const g = wayGeometry(osm, road);
+    for (let i = 1; i < g.length; i++) {
+      for (const wall of wallGeoms) {
+        for (let k = 1; k < wall.g.length; k++) {
+          const x = segX(g[i - 1], g[i], wall.g[k - 1], wall.g[k]);
+          if (!x) continue;
+          // Angle between the street and the wall (0 = running along it, 90 = straight through).
+          const ang = (p, q) => Math.atan2((q.lat - p.lat) * 110900, (q.lon - p.lon) * 94600);
+          let angle = Math.abs(ang(g[i - 1], g[i]) - ang(wall.g[k - 1], wall.g[k])) % Math.PI;
+          angle = Math.round((Math.min(angle, Math.PI - angle) * 180) / Math.PI);
+          crossings.push({ wall: wall.id, lat: round(x.lat), lon: round(x.lon), width, angle, highway: t.highway, name: t['name:en'] ?? t.name ?? null });
+        }
+      }
+    }
+  }
+
+  // The Wilson's Arch prayer hall: a low vaulted hall against the Wall at the north end of the
+  // prayer plaza (the map has no height, so the generic generator made it a 3-6 storey block).
+  const wilsonWay = ways.find((w) => /Wilson's Arch/.test(nameEn(w)) && w.tags.building);
+  const wilson = wilsonWay ? { id: `w${wilsonWay.id}`, ring: openRing(wayPts(wilsonWay)) } : null;
+  if (wilson) replaces.push(wilson.id);
+  // Other stretches mapped as building=wall (e.g. south of the prayer area): plain stone masses.
+  const plainWalls = ways
+    .filter((w) => w.tags.building === 'wall' && w !== ww && w.refs.length >= 4)
+    .map((w) => ({ id: `w${w.id}`, ring: openRing(wayPts(w)), height: Number(w.tags.height ?? 12) }));
+  for (const w of plainWalls) replaces.push(w.id);
+
+  // The Old City: convex hull of the city walls. Inside it, buildings without a mapped height
+  // default to 2-3 storeys (it is low-rise), not the 3-6 of the modern city.
+  const hullPts = walls.flatMap((w) => { const o = []; for (let i = 0; i < w.points.length; i += 2) o.push([w.points[i + 1], w.points[i]]); return o; });
+  hullPts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const p of hullPts) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p); }
+  for (const p of [...hullPts].reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p); }
+  const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)].flatMap(([lon, lat]) => [round(lat), round(lon)]);
+
   const patches = [];
   // Outer outline only: the relation's inner ring (the Marwani mosque garden) is excluded from
   // the land use, but physically it lies on the esplanade too.
@@ -145,8 +213,14 @@ export function extractLandmarks(osm) {
     attribution: '© OpenStreetMap contributors',
     bbox: { ...OLD_CITY_BBOX },
     elevation: { ...ELEVATION },
+    oldCity: { ring: hull, floorsMin: 2, floorsMax: 3 },
     walls,
+    crossings,
+    wilson,
+    plainWalls,
     gates,
+    prayer,
+    mughrabi,
     westernWall: ww ? { id: `w${ww.id}`, ring: openRing(wayPts(ww)), height: Number(ww.tags.height ?? 20) } : null,
     plaza: plaza ? { id: `w${plaza.id}`, ring: openRing(wayPts(plaza)) } : null,
     templeMount: tm ? { id: `r${tm.id}`, outer: relRings(tm, 'outer'), inner: relRings(tm, 'inner') } : null,
@@ -177,7 +251,8 @@ async function main() {
   await writeFile(OUT, json);
   console.log(`[landmarks] wrote ${OUT} (${(json.length / 1024).toFixed(0)} KB): ${data.walls.length} wall ways, ${data.gates.length} gates` +
     ` (${data.gates.map((g) => g.name).join(', ')}), western wall ${!!data.westernWall}, plaza ${!!data.plaza}, temple mount ${!!data.templeMount},` +
-    ` citadel ${!!data.citadel} (minaret ${!!data.citadel?.minaret}), sepulchre parts ${data.sepulchre?.parts.length ?? 0}, replaces ${data.replaces.length}`);
+    ` citadel ${!!data.citadel} (minaret ${!!data.citadel?.minaret}), sepulchre parts ${data.sepulchre?.parts.length ?? 0}, replaces ${data.replaces.length},` +
+    ` ${data.crossings.length} street crossings, prayer sections ${!!data.prayer.men && !!data.prayer.women}, Mughrabi Gate ${!!data.mughrabi}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

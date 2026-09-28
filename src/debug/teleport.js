@@ -85,6 +85,35 @@ async function init(debug) {
   const { points, tiles } = await loadStreets(world);
 
   const destinations = [{ label: 'Spawn (Jaffa Road)', group: 'Start', go: () => world.spawn }];
+
+  // Old City landmarks: stand a little way off, facing the landmark.
+  try {
+    const lm = await loadJson(`${DATA}landmarks.json`);
+    const proj = world.projection;
+    const centroid = (ring) => {
+      let x = 0, z = 0;
+      for (let i = 0; i < ring.length; i += 2) { const p = proj.project(ring[i], ring[i + 1]); x += p.x; z += p.z; }
+      return { x: (x * 2) / ring.length, z: (z * 2) / ring.length };
+    };
+    const wallPts = lm.walls.flatMap((w) => w.points);
+    const oc = centroid(wallPts);
+    const facing = (from, to) => ({ x: from.x, z: from.z, heading: Math.atan2(to.x - from.x, to.z - from.z) });
+    const away = (p, dist) => {
+      const dx = p.x - oc.x, dz = p.z - oc.z, l = Math.hypot(dx, dz) || 1;
+      return facing({ x: p.x + (dx / l) * dist, z: p.z + (dz / l) * dist }, p);
+    };
+    const land = (label, spot) => destinations.push({ label, group: 'Old City landmarks', exact: true, ...spot });
+    if (lm.plaza && lm.westernWall) land('Western Wall Plaza', facing(centroid(lm.plaza.ring), centroid(lm.westernWall.ring)));
+    if (lm.templeMount) {
+      const dome = proj.project(31.77805, 35.2354);
+      land('Temple Mount esplanade', facing(proj.project(31.7773, 35.2356), dome));
+    }
+    if (lm.citadel) land('Tower of David', away(centroid(lm.citadel.outer[0]), 45));
+    if (lm.sepulchre) land('Holy Sepulchre', away(centroid(lm.sepulchre.ring), 40));
+    for (const g of lm.gates) land(g.name, away(proj.project(g.lat, g.lon), 28));
+  } catch (err) {
+    console.warn('[teleport] no landmarks:', err.message);
+  }
   const places = [...world.places].sort((a, b) => a.name.localeCompare(b.name));
   for (const p of places) {
     destinations.push({ label: p.nameLocal && p.nameLocal !== p.name ? `${p.name} · ${p.nameLocal}` : p.name, group: 'Neighbourhoods', x: p.x, z: p.z });
@@ -94,7 +123,7 @@ async function init(debug) {
   }
 
   const teleport = (dest) => {
-    const target = dest.go ? dest.go() : { ...nearestStreet(points, dest.x, dest.z) };
+    const target = dest.go ? dest.go() : dest.exact ? { x: dest.x, z: dest.z, heading: dest.heading } : { ...nearestStreet(points, dest.x, dest.z) };
     if (!dest.go) {
       // Drop from just above the ground; the controller settles onto the road surface.
       const ground = world.terrain?.heightAt ? world.terrain.heightAt(target.x, target.z) : 0;

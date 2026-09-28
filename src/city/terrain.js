@@ -5,6 +5,21 @@
 // below near a minimum); add `datum` to get meters above sea level. Outside the heightmap the edge values are extended and, further out,
 // eased toward the mean edge height, so the landscape doesn't end in a cliff.
 // No three.js dependency.
+//
+// Patches (heightmap.patches, optional): flat areas that override the DEM where it is too
+// coarse, e.g. the Temple Mount esplanade and the Western Wall Plaza 19 m below it, which the
+// 90 m DEM smears into one slope. Each patch is { name, mode: 'raise' | 'lower', elevation
+// (m above sea level), rings: [[lat, lon, ...], ...] }.
+//   heightAt()           follows the patches exactly (collision, buildings, people, roads).
+//   meshHeightAt(x,z,m)  is for terrain meshes sampled every `m` meters. The ramp a mesh
+//                        needs across a patch edge is moved off the patch: inside a raised
+//                        patch, the band within `m` of its edge keeps the level outside it (or
+//                        a neighbouring lowered patch), so the ramp lies under the platform;
+//                        just outside a lowered patch, the band within `m` stays at the patch
+//                        level, so the ramp lies under the terraces around it. Whatever stands
+//                        on the edges (retaining walls, the platform slab, terraces) hides it.
+
+import { pointInRings, distanceToEdges } from './footprint.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const smoothstep = (a, b, x) => {
@@ -109,11 +124,63 @@ export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeS
     return a + (b - a) * tz;
   }
 
-  function heightAt(x, z) {
+  function demHeightAt(x, z) {
     const h = sample(x, z);
     const ox = Math.max(x0 - x, x - se.x, 0), oz = Math.max(z0 - z, z - se.z, 0);
     if (ox === 0 && oz === 0) return h;
     return h + (meanEdge - h) * smoothstep(0, fadeDistance, Math.hypot(ox, oz));
+  }
+
+  const patches = (heightmap.patches ?? []).map((p) => {
+    const rings = p.rings.map((r) => projection.projectFlat(r));
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < rings[0].length; i += 2) {
+      minX = Math.min(minX, rings[0][i]); maxX = Math.max(maxX, rings[0][i]);
+      minZ = Math.min(minZ, rings[0][i + 1]); maxZ = Math.max(maxZ, rings[0][i + 1]);
+    }
+    return { name: p.name, mode: p.mode, y: p.elevation - datum, rings, bounds: { minX, maxX, minZ, maxZ } };
+  });
+  const within = (p, x, z, pad = 0) => x >= p.bounds.minX - pad && x <= p.bounds.maxX + pad && z >= p.bounds.minZ - pad && z <= p.bounds.maxZ + pad;
+  // Edge tolerance: mapped features that end exactly on a patch edge (the plaza's own paving,
+  // paths up to the Western Wall) must not pick up the other level and draw a steep sliver.
+  // A lowered patch reaches EDGE_TOL beyond its outline, a raised one starts EDGE_TOL inside
+  // it; walls stand on those edges and hide the difference.
+  const EDGE_TOL = 2;
+  const patchAt = (x, z) => {
+    for (const p of patches) {
+      if (!within(p, x, z, EDGE_TOL)) continue;
+      const inside = pointInRings(p.rings, x, z);
+      if (p.mode === 'lower' ? inside || distanceToEdges(p.rings, x, z) < EDGE_TOL : inside && distanceToEdges(p.rings, x, z) >= EDGE_TOL) return p;
+    }
+    return null;
+  };
+
+  function heightAt(x, z) {
+    if (patches.length) {
+      const p = patchAt(x, z);
+      if (p) return p.y;
+    }
+    return demHeightAt(x, z);
+  }
+
+  function meshHeightAt(x, z, margin = 0) {
+    const p = patches.length ? patchAt(x, z) : null;
+    if (!p) {
+      // Just outside a lowered patch: stay down, so the ramp up to the surroundings lies
+      // outside the patch (under the retaining terraces built around it).
+      if (margin > 0) {
+        for (const q of patches) {
+          if (q.mode === 'lower' && within(q, x, z, margin) && distanceToEdges(q.rings, x, z) < margin) return q.y;
+        }
+      }
+      return demHeightAt(x, z);
+    }
+    if (p.mode !== 'raise' || margin <= 0 || distanceToEdges(p.rings, x, z) >= margin) return p.y;
+    // Edge band of a raised patch: take the level just outside it.
+    for (const q of patches) {
+      if (q !== p && q.mode === 'lower' && within(q, x, z, margin) && (pointInRings(q.rings, x, z) || distanceToEdges(q.rings, x, z) < margin)) return q.y;
+    }
+    return demHeightAt(x, z);
   }
 
   return {
@@ -125,6 +192,9 @@ export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeS
     bounds: { minX: x0, maxX: se.x, minZ: z0, maxZ: se.z },
     source: { name: heightmap.source, license: heightmap.license, attribution: heightmap.attribution },
     heightAt,
+    meshHeightAt,
+    /** Projected patches ({ name, mode, y, rings, bounds }), e.g. for the platform model. */
+    patches,
   };
 }
 
