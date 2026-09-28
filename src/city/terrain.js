@@ -197,6 +197,11 @@ export function createTerrain(heightmap, projection, { fadeDistance = 500, bakeS
     for (const q of patches) {
       if (q !== p && q.mode === 'lower' && within(q, x, z, margin) && (pointInRings(q.rings, x, z) || distanceToEdges(q.rings, x, z) < margin)) return q.y;
     }
+    // A raised patch on another one (the platform around the Dome of the Rock on the
+    // esplanade): the level outside is the lower platform's.
+    for (const q of patches) {
+      if (q !== p && q.mode === 'raise' && q.y < p.y && within(q, x, z) && pointInRings(q.rings, x, z)) return q.y;
+    }
     return demHeightAt(x, z);
   }
 

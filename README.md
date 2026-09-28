@@ -137,6 +137,42 @@ neighbourhood names, and writes a compact pre-parsed JSON (flat `[lat, lon, ...]
 The app then runs fully offline. If Overpass is unreachable, save a response yourself and
 convert it with `node scripts/fetch_jerusalem.js --from raw.json`.
 
+### Old City landmarks and the Temple Mount
+
+`scripts/fetch_landmarks.js` downloads the Old City from the OSM API and writes
+`public/data/landmarks.json`, which the hand-built models in `src/city/landmarks/` read.
+Those models replace the generic buildings with the same OSM ids (`replaces`). The data covers:
+the walls and gates, the Western Wall and its plaza, the Tower of David and the Holy
+Sepulchre. It also has `haram`, the buildings on the Temple Mount esplanade
+(`src/city/landmarks/haram.js`):
+
+- The raised platform around the Dome of the Rock, 4 m above the esplanade (744.5 m). Its
+  outline is the hull of the eight arcades (qanatir), which stand at the top of its stairs.
+  It is a terrain patch like the esplanade, so walking, collision and buildings all follow
+  it. Under each arcade there is a flight of 0.25 m steps.
+- The Dome of the Rock:
+  - the octagon: marble below, blue tilework above, arched windows, four porches;
+  - the lead roof ring;
+  - the tiled drum with 16 windows;
+  - the gold dome with its crescent finial.
+- al-Aqsa: the hall with a raised nave and lead gable roof, the seven-arch portico on the
+  north facade, and the grey dome over the qibla end.
+- The Dome of the Chain: open rings of columns, a tiled drum and the dome.
+- The eight small domes: open column pavilions, or closed square and octagonal buildings.
+- Four minarets: the square Mamluk towers, and the round Ottoman shaft at Bab al-Asbat.
+  Where OSM has no minaret node, the minaret stands at an approximate position next to its
+  gate, flagged `approximate`.
+- Groves: grass and olive trees in the mapped gardens and groves. The mapped trees
+  themselves are planted by the city.
+
+The three new materials (glazed tiles, gold leaf and marble panels) are styles of the
+shared landmark shader (`materials.js`), so the whole compound is a single mesh. On the
+esplanade, buildings without a mapped height are built at one storey with no shopfronts.
+
+Without network access, `node scripts/fetch_landmarks.js --from-tiles` rebuilds `haram`
+from the tile files. Tiles have no nodes and no land-use areas, so in that mode all
+minarets are approximate and the only groves are the mapped gardens.
+
 ### Tiled world (what the game loads)
 
 `public/data/tiles/`:

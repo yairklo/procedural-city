@@ -23,10 +23,23 @@ const centroid = (ring) => {
 };
 
 test('landmarks: the plaza lies 19 m below the esplanade, and the Western Wall spans the drop', () => {
-  const plaza = terrain.patches.find((p) => p.mode === 'lower'), esplanade = terrain.patches.find((p) => p.mode === 'raise');
-  const pc = centroid(plaza.rings[0]), ec = centroid(esplanade.rings[0]);
+  const plaza = terrain.patches.find((p) => p.mode === 'lower'), esplanade = terrain.patches.find((p) => p.name === 'Temple Mount esplanade');
+  const pc = centroid(plaza.rings[0]);
   assert.equal(ASL(terrain.heightAt(pc.x, pc.z)), 721.5);
-  assert.equal(ASL(terrain.heightAt(ec.x, ec.z)), 740.5);
+  // The esplanade is at 740.5 m, the platform around the Dome of the Rock 4 m higher.
+  const upper = terrain.patches.find((p) => p.name === 'Dome of the Rock platform');
+  let low = 0, high = 0;
+  const b = esplanade.bounds;
+  for (let x = b.minX; x <= b.maxX; x += 5) {
+    for (let z = b.minZ; z <= b.maxZ; z += 5) {
+      if (!pointInRings(esplanade.rings, x, z) || distanceToEdges(esplanade.rings, x, z) < 3) continue;
+      if (distanceToEdges(upper.rings, x, z) < 3) continue;
+      const onUpper = pointInRings(upper.rings, x, z);
+      assert.equal(ASL(terrain.heightAt(x, z)), onUpper ? 744.5 : 740.5);
+      if (onUpper) high++; else low++;
+    }
+  }
+  assert.ok(low > 200 && high > 200, `${low} esplanade / ${high} platform samples`);
 
   const collision = new CityCollisionWorld({ cellSize: 32, groundHeightAt: terrain.heightAt });
   const lm = buildLandmarks(landmarks, { projection, terrain, collision, uniforms: { uNight: { value: 0 } } });
@@ -54,7 +67,7 @@ test('landmarks: the plaza is flat and the ground around it rises smoothly (no c
       } else if (distanceToEdges(plaza.rings, x, z) < 60) {
         // Within the falloff: never a jump of more than 3 m over 2 m (no retaining cliff).
         const n = terrain.heightAt(x + 2, z);
-        if (!pointInRings(terrain.patches.find((p) => p.mode === 'raise').rings, x + 2, z)) {
+        if (!pointInRings(terrain.patches.find((p) => p.name === 'Temple Mount esplanade').rings, x + 2, z)) {
           assert.ok(Math.abs(n - h) < 3, `step of ${(n - h).toFixed(1)} m at ${x.toFixed(0)}, ${z.toFixed(0)}`);
         }
         steps++;
@@ -75,5 +88,46 @@ test('landmarks: city walls leave openings where streets pass and replace the ge
   const blocked = collision.queryAABB(p.x - 0.3, y + 0.5, p.z - 0.3, p.x + 0.3, y + 1.8, p.z + 0.3).filter((bx) => bx.kind === 'wall');
   assert.equal(blocked.length, 0, `no wall box at the ${crossing.name ?? crossing.highway} crossing`);
   for (const id of ['w817206833', 'r136164', 'w1022672085']) assert.ok(landmarks.replaces.includes(id), `${id} is replaced by a custom model`);
+  lm.dispose();
+});
+
+test('landmarks: the Haram buildings, the raised platform and its stairs', () => {
+  const h = landmarks.haram;
+  assert.ok(h.domeOfTheRock && h.aqsa && h.domeOfTheChain);
+  assert.equal(h.arcades.length, 8);
+  assert.equal(h.domes.length, 8);
+  assert.equal(h.minarets.length, 4);
+  for (const id of [h.domeOfTheRock.id, h.aqsa.id, h.domeOfTheChain.id, ...h.arcades.map((a) => a.id)]) assert.ok(landmarks.replaces.includes(id), `${id} replaced`);
+
+  const collision = new CityCollisionWorld({ cellSize: 32, groundHeightAt: terrain.heightAt });
+  const lm = buildLandmarks(landmarks, { projection, terrain, collision, uniforms: { uNight: { value: 0 } } });
+  assert.equal(lm.stats.haram.arcades, 8);
+  assert.equal(lm.stats.haram.minarets, 4);
+  const upper = terrain.patches.find((p) => p.name === 'Dome of the Rock platform');
+  const esplanade = terrain.patches.find((p) => p.name === 'Temple Mount esplanade');
+
+  // The Dome of the Rock stands on the raised platform, and its gold dome tops out ~35 m above it.
+  const rock = centroid(projection.projectFlat(h.domeOfTheRock.ring));
+  assert.equal(ASL(terrain.heightAt(rock.x + 30, rock.z + 30)), 744.5);
+  const top = collision.queryAABB(rock.x - 1, 0, rock.z - 1, rock.x + 1, 1e4, rock.z + 1).reduce((m, b) => Math.max(m, b.maxY), -Infinity);
+  assert.ok(top - upper.y > 25 && top - upper.y < 40, `dome top ${(top - upper.y).toFixed(1)} m above the platform`);
+
+  // Walking up the stairs under an arcade: from the esplanade, every step at most 0.45 m.
+  const arcade = h.arcades.find((a) => a.name === 'South Arcade') ?? h.arcades[0];
+  const ac = centroid(projection.projectFlat(arcade.ring));
+  const upc = centroid(upper.rings[0]);
+  const dx = ac.x - upc.x, dz = ac.z - upc.z, l = Math.hypot(dx, dz);
+  let y = null, climbed = 0;
+  for (let t = 25; t >= 0; t -= 0.1) {
+    const x = ac.x + (dx / l) * t, z = ac.z + (dz / l) * t;
+    const g = collision.groundHeight(x, z, (y ?? esplanade.y) + 0.45);
+    if (y !== null) {
+      assert.ok(g - y <= 0.46, `step of ${(g - y).toFixed(2)} m at ${t.toFixed(1)} m`);
+      climbed += Math.max(0, g - y);
+    }
+    y = g;
+  }
+  assert.ok(Math.abs(y - upper.y) < 0.3, `reached the platform (${ASL(y).toFixed(2)} m)`);
+  assert.ok(climbed > 3.5);
   lm.dispose();
 });

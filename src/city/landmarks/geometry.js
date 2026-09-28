@@ -4,11 +4,12 @@
 // normal) plus a per-vertex stone style, and turns them into one BufferGeometry.
 //   aStone = (course height m, mean stone length m, style): 0 = plain ashlar,
 //            1 = Herodian (drafted margins), 2 = roof / lead, 3 = wood, 4 = dark metal,
-//            5 = foliage, 6 = paving, 7 = plain (openings: flat dark, no pattern)
+//            5 = foliage, 6 = paving, 7 = plain (openings: flat dark, no pattern),
+//            8 = glazed tiles, 9 = gold leaf, 10 = marble panels
 
 import * as THREE from 'three';
 
-export const STYLE = Object.freeze({ ashlar: 0, herodian: 1, lead: 2, wood: 3, metal: 4, foliage: 5, paving: 6, plain: 7 });
+export const STYLE = Object.freeze({ ashlar: 0, herodian: 1, lead: 2, wood: 3, metal: 4, foliage: 5, paving: 6, plain: 7, tile: 8, gold: 9, marble: 10 });
 
 export class Mesher {
   constructor() {

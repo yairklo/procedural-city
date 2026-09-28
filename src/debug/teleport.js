@@ -108,6 +108,14 @@ async function init(debug) {
       const dome = proj.project(31.77805, 35.2354);
       land('Temple Mount esplanade', facing(proj.project(31.7773, 35.2356), dome));
     }
+    if (lm.haram?.domeOfTheRock) {
+      const c = centroid(lm.haram.domeOfTheRock.ring);
+      land('Dome of the Rock', facing({ x: c.x, z: c.z + 60 }, c));
+    }
+    if (lm.haram?.aqsa) {
+      const c = centroid(lm.haram.aqsa.ring);
+      land('al-Aqsa', facing({ x: c.x - 10, z: c.z - 95 }, c));
+    }
     if (lm.citadel) land('Tower of David', away(centroid(lm.citadel.outer[0]), 45));
     if (lm.sepulchre) land('Holy Sepulchre', away(centroid(lm.sepulchre.ring), 40));
     for (const g of lm.gates) land(g.name, away(proj.project(g.lat, g.lon), 28));

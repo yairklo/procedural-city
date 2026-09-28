@@ -12,13 +12,20 @@
 //   metal     dark painted iron (fences, gate doors)
 //   foliage   caper bushes growing from the Western Wall
 //   paving    large square flagstones (platform tops)
-// At night the stone is washed by warm floodlights (uNight), as the real walls are.
+//   tile      glazed tilework (the Dome of the Rock): the vertex colour is the ground colour,
+//             with a repeating star-and-cross pattern in turquoise, white and a darker blue,
+//             framed in bands; glossy
+//   gold      gold leaf (the Dome of the Rock's dome): metallic, with a faint sky reflection
+//             so it reads gold even under the low image-based light
+//   marble    veined white-grey marble panels in thin dark frames (lower walls)
+// At night the stone is washed by warm floodlights (uNight), as the real walls are; the gold
+// and the tiles catch them too.
 
 import * as THREE from 'three';
 
 export function createLandmarkMaterial(uniforms) {
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 });
-  mat.customProgramCacheKey = () => 'landmark-stone-v1';
+  mat.customProgramCacheKey = () => 'landmark-stone-v2';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = uniforms.uNight;
     shader.vertexShader = shader.vertexShader
@@ -105,15 +112,55 @@ float lmStone = 0.0;
     diffuseColor.rgb *= (0.9 + 0.12 * lmHash(floor(g))) * (1.0 - 0.3 * joint);
     lmRough = 0.85;
     lmStone = 0.5;
-  } else {
+  } else if (style < 7.5) {
     lmRough = 1.0; // plain: window and arch openings in shadow
+  } else if (style < 8.5) {
+    // Tiles: 0.6 m panels, each a star (turquoise) on a cross (white) over the ground colour,
+    // separated by thin light grout; the pattern repeats in every panel.
+    vec2 g = fc / 0.6;
+    vec2 f = fract(g) - 0.5;
+    float grout = 1.0 - smoothstep(0.46, 0.49, max(abs(f.x), abs(f.y)));
+    float ang = atan(f.y, f.x);
+    float r = length(f);
+    float star = 1.0 - smoothstep(0.0, 0.03, r - (0.2 + 0.07 * cos(ang * 8.0)));
+    float cross = 1.0 - smoothstep(0.0, 0.03, min(abs(f.x), abs(f.y)) - 0.045);
+    float ring = 1.0 - smoothstep(0.0, 0.025, abs(r - 0.33) - 0.02);
+    vec3 col = diffuseColor.rgb;
+    col = mix(col, vec3(0.93, 0.93, 0.88), cross * 0.9 * (1.0 - star));
+    col = mix(col, vec3(0.12, 0.55, 0.62), star);
+    col = mix(col, diffuseColor.rgb * 0.55, ring * 0.8);
+    col *= 0.94 + 0.1 * lmHash(floor(g));
+    diffuseColor.rgb = mix(vec3(0.9, 0.88, 0.82), col, grout);
+    lmRough = 0.28;
+    lmStone = 0.35;
+  } else if (style < 9.5) {
+    // Gold leaf: fine sheet seams, a sky tint where the surface faces up.
+    float toSeam = min(fract(fc.x / 0.75), 1.0 - fract(fc.x / 0.75)) * 0.75;
+    float seam = 1.0 - smoothstep(0.004, 0.02 + aa.x, toSeam);
+    diffuseColor.rgb *= 1.0 - 0.1 * seam + 0.05 * lmNoise(fc * 3.0);
+    lmRough = 0.3;
+    lmMetal = 0.85;
+    lmStone = 0.6;
+  } else {
+    // Marble: panels ~1.3 m wide in thin dark frames, soft grey veins.
+    vec2 g = vec2(fc.x / 1.3, fc.y / 2.2);
+    vec2 f = fract(g);
+    float frame = 1.0 - smoothstep(0.01, 0.025, min(min(f.x, 1.0 - f.x) * 1.3, min(f.y, 1.0 - f.y) * 2.2));
+    float vein = smoothstep(0.62, 0.7, lmNoise(fc * vec2(1.4, 0.7) + lmHash(floor(g)) * 11.0));
+    vein += 0.5 * smoothstep(0.7, 0.76, lmNoise(fc * 4.0 + 3.0));
+    diffuseColor.rgb *= (0.97 + 0.06 * lmHash(floor(g))) * (1.0 - 0.18 * vein) * (1.0 - 0.45 * frame);
+    lmRough = 0.35;
+    lmStone = 0.8;
   }
 }`)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = lmRough;')
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = lmMetal;')
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
   // Warm floodlighting of the stone at night, brighter low on the walls.
-  totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.8, 0.55) * uNight * lmStone * 0.55;`);
+  totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.8, 0.55) * uNight * lmStone * 0.55;
+  // Gold: the image-based light is weak (and warm-tinted by day), so add a little of the
+  // sky the dome would mirror, stronger toward the top.
+  if (floor(vStone.z + 0.5) == 9.0) totalEmissiveRadiance += diffuseColor.rgb * (0.22 + 0.2 * max(normalize(vLmNormal).y, 0.0)) * (1.0 - 0.6 * uNight);`);
   };
   return mat;
 }

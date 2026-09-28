@@ -15,6 +15,9 @@
 //                Phasael tower and the Ottoman minaret
 //   sepulchre    the Church of the Holy Sepulchre from its mapped parts (heights, lead domes,
 //                the bell tower)
+//   haram        the buildings on the Temple Mount esplanade (haram.js): the raised platform
+//                with its stairs and arcades, the Dome of the Rock, al-Aqsa, the Dome of the
+//                Chain, the small domes, the minarets and the groves
 //
 // Everything shares one material (materials.js) and adds collision boxes to the world under
 // the group 'landmarks'. The same OSM buildings are left out of the generated city
@@ -24,6 +27,7 @@ import * as THREE from 'three';
 import { Mesher, STYLE, resample, ringCenter, ringRadius, signedArea } from './geometry.js';
 import { createLandmarkMaterial } from './materials.js';
 import { decomposeFootprint, pointInRings, distanceToEdges, orientedBox } from '../footprint.js';
+import { buildHaram } from './haram.js';
 
 const COLOR = {
   wall: 0xd6ccb8, // Jerusalem limestone: cream with a hint of pink, not yellow
@@ -144,7 +148,8 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
   };
 
   // --- Temple Mount platform ----------------------------------------------------------------
-  const platform = (terrain.patches ?? []).find((p) => p.mode === 'raise');
+  // The esplanade is the lowest raised patch (the platform around the Dome of the Rock sits on it).
+  const platform = (terrain.patches ?? []).filter((p) => p.mode === 'raise').sort((a, b) => a.y - b.y)[0];
   const plazaPatch = (terrain.patches ?? []).find((p) => p.mode === 'lower');
   if (platform) {
     const m = new Mesher();
@@ -775,6 +780,11 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
       }
     }
     finish(m, 'HolySepulchre');
+  }
+
+  // --- Temple Mount / Haram al-Sharif buildings ---------------------------------------------------
+  if (data.haram) {
+    stats.haram = buildHaram(data.haram, { project, at, ground, patches: terrain.patches, addBox, addFootprint, quadBox, finish });
   }
 
   return {

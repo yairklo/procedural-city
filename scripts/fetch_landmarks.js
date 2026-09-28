@@ -13,10 +13,21 @@
 //   citadel      the Tower of David (castle outline, minaret position)
 //   sepulchre    the Church of the Holy Sepulchre with its mapped building parts (heights,
 //                domes, bell tower)
-//   patches      terrain patches: the esplanade and the plaza as flat surfaces
+//   haram        the buildings on the Temple Mount esplanade: the Dome of the Rock, al-Aqsa,
+//                the Dome of the Chain, the arcades (qanatir) at the top of the stairs, the small
+//                domes, the groves, the minarets, the raised platform around the Dome of the
+//                Rock (from the arcades that stand on its edge) and the mapped trees
+//   patches      terrain patches: the raised platform, the esplanade and the plaza as flat
+//                surfaces (the raised platform first: the first patch containing a point wins)
 //   replaces     OSM building ids the landmark models replace (not generated again)
 //
 //   node scripts/fetch_landmarks.js
+//   node scripts/fetch_landmarks.js --from-tiles   (no network: rebuilds `haram` from the tile
+//                                                   files already in public/data/tiles, and keeps
+//                                                   the rest of landmarks.json. Tiles have no
+//                                                   nodes or land-use areas, so minarets fall back
+//                                                   to their approximate positions and the only
+//                                                   groves are the mapped gardens.)
 //
 // Elevations: the 90 m DEM smears the 19 m drop at the Western Wall (plaza 739.6 m, Dome of
 // the Rock 744 m in the DEM). The esplanade is set to 740.5 m and the plaza 19 m below it
@@ -33,7 +44,16 @@ import { stitchRings } from './fetch_jerusalem.js';
 const OUT = resolve(dirname(fileURLToPath(import.meta.url)), '../public/data/landmarks.json');
 export const OLD_CITY_BBOX = Object.freeze({ south: 31.77, west: 35.225, north: 31.7835, east: 35.239 });
 
-export const ELEVATION = Object.freeze({ esplanade: 740.5, plaza: 740.5 - 19 });
+export const ELEVATION = Object.freeze({ esplanade: 740.5, plaza: 740.5 - 19, upperPlatform: 740.5 + 4 });
+
+// The four minarets of the Haram. Where OSM has no minaret node near one, its approximate
+// position is used (next to the gate it is named after; flagged `approximate`).
+export const HARAM_MINARETS = Object.freeze([
+  { name: 'Fakhriyya Minaret', style: 'square', lat: 31.7759, lon: 35.23468 }, // south-west corner
+  { name: 'Bab al-Silsila Minaret', style: 'square', lat: 31.77738, lon: 35.23436 }, // west, by the Chain Gate
+  { name: 'Bab al-Ghawanima Minaret', style: 'square', lat: 31.78002, lon: 35.2338 }, // north-west corner
+  { name: 'Bab al-Asbat Minaret', style: 'round', lat: 31.78019, lon: 35.23629 }, // north wall
+]);
 const CITADEL_MINARET = Object.freeze({ lat: 31.77585, lon: 35.22776 });
 
 // Gates of the Old City walls, by English name, and how they are modelled.
@@ -64,6 +84,90 @@ const inRing = (r, lat, lon) => {
   }
   return inside;
 };
+
+const hull2d = (pts) => {
+  // Convex hull of [x, y] points (monotone chain), counter-clockwise.
+  const p = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], up = [];
+  for (const q of p) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
+  for (const q of p.reverse()) { while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); }
+  return [...lo.slice(0, -1), ...up.slice(0, -1)];
+};
+
+/**
+ * The Haram / Temple Mount buildings from generic features, so it works from OSM ways and
+ * from the tile files alike.
+ * @param {{id:string, tags:object, ring:number[]}[]} features  closed ways (ring: lat, lon, ...)
+ * @param {{id:string, tags:object, lat:number, lon:number}[]} nodes
+ * @param {number[]} enclosure  the compound's outer ring (lat, lon, ...)
+ * @param {number[]} trees      mapped trees (lat, lon, ...)
+ */
+export function extractHaram(features, nodes, enclosure, trees = []) {
+  const nameEn = (f) => f.tags['name:en'] ?? f.tags.name ?? '';
+  const inside = (f) => { const c = centroid(f.ring); return inRing(enclosure, c.lat, c.lon); };
+  const on = features.filter((f) => f.ring.length >= 6 && inside(f));
+  const pick = (re) => on.find((f) => f.tags.building && re.test(nameEn(f)));
+  const num = (v, d = null) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
+  const part = (f) => f && { id: f.id, name: nameEn(f) || null, ring: f.ring, height: num(f.tags.height), minHeight: num(f.tags.min_height, 0) };
+
+  const rock = pick(/^Dome of the Rock$/);
+  const aqsa = pick(/al-Aqsa Mosque/i);
+  const chain = pick(/^Dome of the Chain$/);
+  const arcades = on.filter((f) => f.tags.building && /Arcade$/.test(nameEn(f))).map(part);
+  const domes = on.filter((f) => f.tags.building && /^Dome of /.test(nameEn(f)) && f !== rock && f !== chain).map(part);
+  const GROVE = { landuse: ['orchard', 'grass', 'meadow', 'forest', 'village_green'], natural: ['wood', 'scrub', 'grassland'], leisure: ['garden', 'park'] };
+  const groves = on
+    .filter((f) => !f.tags.building && Object.entries(GROVE).some(([k, vs]) => vs.includes(f.tags[k])))
+    .map((f) => ({ id: f.id, kind: f.tags.landuse ?? f.tags.natural ?? f.tags.leisure, name: nameEn(f) || null, ring: f.ring }));
+
+  // Minarets: mapped ones (node or outline) replace the approximate positions of the nearest
+  // known minaret; the walls' own minarets stand on the enclosure line, so allow a margin.
+  const near = (a, b) => Math.hypot((a.lat - b.lat) * 110900, (a.lon - b.lon) * 94600);
+  const mapped = [
+    ...nodes.filter((n) => n.tags['tower:type'] === 'minaret' || n.tags.building === 'minaret'),
+    ...features.filter((f) => f.tags['tower:type'] === 'minaret' || f.tags.building === 'minaret').map((f) => ({ id: f.id, tags: f.tags, ...centroid(f.ring) })),
+  ].filter((m) => HARAM_MINARETS.some((k) => near(k, m) < 60));
+  const minarets = HARAM_MINARETS.map((k) => {
+    const m = mapped.filter((x) => near(k, x) < 60).sort((a, b) => near(k, a) - near(k, b))[0];
+    return m ? { name: k.name, style: k.style, id: m.id, lat: round(m.lat), lon: round(m.lon), approximate: false } : { ...k, approximate: true };
+  });
+
+  // The raised platform around the Dome of the Rock: the arcades stand at the top of its
+  // stairs, so its outline is the hull of the arcades (and the Dome of the Rock), 2 m out.
+  let upperPlatform = null;
+  const edge = [...arcades.map((a) => a.ring), ...(rock ? [rock.ring] : [])];
+  if (arcades.length >= 3) {
+    const lat0 = centroid(rock?.ring ?? arcades[0].ring).lat;
+    const kx = 111320 * Math.cos((lat0 * Math.PI) / 180), kz = 110900;
+    const pts = [];
+    for (const r of edge) for (let i = 0; i < r.length; i += 2) pts.push([r[i + 1] * kx, r[i] * kz]);
+    const h = hull2d(pts);
+    const cx = h.reduce((s, p) => s + p[0], 0) / h.length, cz = h.reduce((s, p) => s + p[1], 0) / h.length;
+    upperPlatform = { ring: h.flatMap(([x, z]) => { const d = Math.hypot(x - cx, z - cz) || 1, g = (d + 2) / d; return [round((cz + (z - cz) * g) / kz), round((cx + (x - cx) * g) / kx)]; }) };
+  }
+
+  const inTm = [];
+  for (let i = 0; i + 1 < trees.length; i += 2) if (inRing(enclosure, trees[i], trees[i + 1])) inTm.push(round(trees[i]), round(trees[i + 1]));
+
+  const haram = {
+    domeOfTheRock: part(rock),
+    aqsa: part(aqsa),
+    domeOfTheChain: part(chain),
+    arcades,
+    domes,
+    groves,
+    minarets,
+    upperPlatform,
+    trees: inTm,
+  };
+  const replaces = [rock, aqsa, chain].filter(Boolean).map((f) => f.id).concat(arcades.map((a) => a.id), domes.map((d) => d.id));
+  return { haram, replaces };
+}
+
+/** The raised-platform terrain patch for `haram` (goes first in the patch list). */
+export const upperPlatformPatch = (haram) =>
+  haram?.upperPlatform ? { name: 'Dome of the Rock platform', mode: 'raise', elevation: ELEVATION.upperPlatform, rings: [haram.upperPlatform.ring] } : null;
 
 /** Extracts the landmark data from merged OSM data (see osm_api.js). */
 export function extractLandmarks(osm) {
@@ -201,6 +305,19 @@ export function extractLandmarks(osm) {
   const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)].flatMap(([lon, lat]) => [round(lat), round(lon)]);
 
   const patches = [];
+  let haram = null;
+  if (tm) {
+    const features = ways
+      .filter((w) => w.refs.length >= 4 && w.refs[0] === w.refs[w.refs.length - 1])
+      .map((w) => ({ id: `w${w.id}`, tags: w.tags, ring: openRing(wayPts(w)) }));
+    const trees = nodes.filter((n) => n.tags.natural === 'tree').flatMap((n) => [n.lat, n.lon]);
+    const nodeList = nodes.filter((n) => Object.keys(n.tags).length).map((n) => ({ id: `n${n.id}`, tags: n.tags, lat: n.lat, lon: n.lon }));
+    const h = extractHaram(features, nodeList, relRings(tm, 'outer')[0], trees);
+    haram = h.haram;
+    replaces.push(...h.replaces);
+    const up = upperPlatformPatch(haram);
+    if (up) patches.push(up);
+  }
   // Outer outline only: the relation's inner ring (the Marwani mosque garden) is excluded from
   // the land use, but physically it lies on the esplanade too.
   if (tm) patches.push({ name: 'Temple Mount esplanade', mode: 'raise', elevation: ELEVATION.esplanade, rings: relRings(tm, 'outer') });
@@ -228,12 +345,42 @@ export function extractLandmarks(osm) {
     templeMount: tm ? { id: `r${tm.id}`, outer: relRings(tm, 'outer'), inner: relRings(tm, 'inner') } : null,
     citadel,
     sepulchre,
+    haram,
     patches,
     replaces: [...new Set(replaces)],
   };
 }
 
+/** --from-tiles: rebuilds `haram` (and its patch and replaced ids) from the tile files. */
+async function fromTiles() {
+  const { readFile, readdir } = await import('node:fs/promises');
+  const data = JSON.parse(await readFile(OUT, 'utf8'));
+  if (!data.templeMount) throw new Error('landmarks.json has no templeMount outline: run the full fetch first');
+  const dir = resolve(dirname(OUT), 'tiles');
+  const features = [], trees = [];
+  const seen = new Set();
+  for (const file of (await readdir(dir)).filter((f) => /^osm_.*\.json$/.test(f))) {
+    const t = JSON.parse(await readFile(resolve(dir, file), 'utf8'));
+    for (const b of t.buildings ?? []) if (!seen.has(b.id) && b.rings?.[0]) { seen.add(b.id); features.push({ id: b.id, tags: b.tags ?? {}, ring: openRing(b.rings[0]) }); }
+    for (const p of t.parks ?? []) if (!seen.has(p.id) && p.rings?.[0]) { seen.add(p.id); features.push({ id: p.id, tags: { leisure: p.kind, ...(p.name ? { name: p.name } : {}) }, ring: openRing(p.rings[0]) }); }
+    if (Array.isArray(t.trees)) trees.push(...t.trees);
+  }
+  const { haram, replaces } = extractHaram(features, [], data.templeMount.outer[0], trees);
+  const old = new Set([data.haram?.domeOfTheRock?.id, data.haram?.aqsa?.id, data.haram?.domeOfTheChain?.id, ...(data.haram?.arcades ?? []).map((a) => a.id), ...(data.haram?.domes ?? []).map((d) => d.id)]);
+  data.haram = haram;
+  data.replaces = [...new Set([...data.replaces.filter((id) => !old.has(id)), ...replaces])];
+  data.patches = data.patches.filter((p) => p.name !== 'Dome of the Rock platform');
+  const up = upperPlatformPatch(haram);
+  if (up) data.patches.unshift(up);
+  const json = JSON.stringify(data);
+  await writeFile(OUT, json);
+  console.log(`[landmarks] haram from tiles: dome of the rock ${!!haram.domeOfTheRock}, al-aqsa ${!!haram.aqsa}, dome of the chain ${!!haram.domeOfTheChain},` +
+    ` ${haram.arcades.length} arcades, ${haram.domes.length} small domes, ${haram.groves.length} groves, ${haram.minarets.length} minarets` +
+    ` (${haram.minarets.filter((m) => m.approximate).length} approximate), ${haram.trees.length / 2} trees, platform ${!!haram.upperPlatform}; wrote ${(json.length / 1024).toFixed(0)} KB`);
+}
+
 async function main() {
+  if (process.argv.includes('--from-tiles')) return fromTiles();
   const rows = 3, cols = 3, b = OLD_CITY_BBOX;
   const docs = [];
   for (let r = 0; r < rows; r++) {
@@ -254,7 +401,9 @@ async function main() {
   console.log(`[landmarks] wrote ${OUT} (${(json.length / 1024).toFixed(0)} KB): ${data.walls.length} wall ways, ${data.gates.length} gates` +
     ` (${data.gates.map((g) => g.name).join(', ')}), western wall ${!!data.westernWall}, plaza ${!!data.plaza}, temple mount ${!!data.templeMount},` +
     ` citadel ${!!data.citadel} (minaret ${!!data.citadel?.minaret}), sepulchre parts ${data.sepulchre?.parts.length ?? 0}, replaces ${data.replaces.length},` +
-    ` ${data.crossings.length} street crossings, prayer sections ${!!data.prayer.men && !!data.prayer.women}, Mughrabi Gate ${!!data.mughrabi}`);
+    ` ${data.crossings.length} street crossings, prayer sections ${!!data.prayer.men && !!data.prayer.women}, Mughrabi Gate ${!!data.mughrabi}` +
+    (data.haram ? `; haram: ${data.haram.arcades.length} arcades, ${data.haram.domes.length} small domes, ${data.haram.groves.length} groves,` +
+      ` ${data.haram.minarets.length} minarets (${data.haram.minarets.filter((m) => m.approximate).length} approximate)` : ''));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

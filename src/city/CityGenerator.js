@@ -37,8 +37,9 @@ export const DEFAULT_CITY_OPTIONS = Object.freeze({
   excludeBuildings: [],
   /**
    * Areas where buildings without a mapped height are low-rise:
-   * [{ ring: [lat, lon, ...], floorsMin, floorsMax }] (landmarks.json `oldCity`: 2-3 storeys
-   * inside the Old City walls instead of the modern city's defaultFloorsMin-Max).
+   * [{ ring: [lat, lon, ...], floorsMin, floorsMax, shops }] (landmarks.json `oldCity`: 2-3
+   * storeys inside the Old City walls instead of the modern city's defaultFloorsMin-Max; the
+   * Temple Mount: 1 storey, `shops: false`). The first area containing a building wins.
    */
   lowRiseAreas: [],
   /** How far building walls continue below the lowest ground point under them (hides gaps on slopes). */
@@ -248,7 +249,7 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
   let heightFromOsm = 0;
 
   const excluded = new Set(o.excludeBuildings ?? []);
-  const lowRise = (o.lowRiseAreas ?? []).map((a) => ({ rings: [proj.projectFlat(a.ring)], o: { ...o, defaultFloorsMin: a.floorsMin ?? 2, defaultFloorsMax: a.floorsMax ?? 3 } }));
+  const lowRise = (o.lowRiseAreas ?? []).map((a) => ({ rings: [proj.projectFlat(a.ring)], shops: a.shops ?? true, o: { ...o, defaultFloorsMin: a.floorsMin ?? 2, defaultFloorsMax: a.floorsMax ?? 3 } }));
   for (const src of osm.buildings ?? []) {
     if (excluded.size && (excluded.has(src.id) || excluded.has(String(src.id).split('-')[0]))) continue;
     const rings = projectRings(src.rings);
@@ -271,7 +272,7 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
     const bottomY = canopy ? ground.max + h.base : ground.min - o.foundationDepth;
     const topY = canopy ? ground.max + h.top : ground.max + h.top;
     const stone = mixHex(styleRng.pick(STONE), styleRng.pick(STONE), styleRng.next());
-    const shop = tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
+    const shop = area0 && !area0.shops ? 0 : tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
     const street = tags['addr:street'];
     const roof = !canopy && PITCHED_ROOFS.has(tags['roof:shape']) && area <= o.tileRoofMaxArea && h.floors <= o.tileRoofMaxFloors
       ? hipRoof(rings[0], area, topY, o, styleRng)

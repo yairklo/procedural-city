@@ -159,6 +159,17 @@ const getJson = async (url, { optional = false } = {}) => {
 /** @type {ReturnType<typeof buildLandmarks> | null} */
 let landmarkLayer = null;
 
+/**
+ * Unmapped-height buildings: single storey, no shopfronts on the Temple Mount (small
+ * fountains, porticoes, offices), 2-3 storeys in the rest of the Old City.
+ */
+function lowRiseAreas(landmarks) {
+  const out = [];
+  if (landmarks.templeMount) out.push({ ring: landmarks.templeMount.outer[0], floorsMin: 1, floorsMax: 1, shops: false });
+  if (landmarks.oldCity) out.push(landmarks.oldCity);
+  return out;
+}
+
 async function loadWorld() {
   const [manifest, dem, legacy, landmarks] = await Promise.all([
     getJson(`${DATA}tiles/manifest.json`),
@@ -184,7 +195,7 @@ async function loadWorld() {
     manifest, dem, legacy, loadTile: (file) => getJson(`${DATA}tiles/${file}`), backend,
     // Buildings the landmark models replace are not generated from the map data.
     // Inside the Old City, buildings without a mapped height are low-rise (2-3 storeys).
-    options: landmarks ? { city: { excludeBuildings: landmarks.replaces ?? [], lowRiseAreas: landmarks.oldCity ? [landmarks.oldCity] : [] } } : {},
+    options: landmarks ? { city: { excludeBuildings: landmarks.replaces ?? [], lowRiseAreas: lowRiseAreas(landmarks) } } : {},
   });
   scene.add(world.group);
   if (landmarks) {
