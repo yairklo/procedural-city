@@ -93,6 +93,16 @@ the gameplay:
   occlusion it casts a ray against the collision world and the terrain: it pulls in fast
   and eases out slowly. It pulls back in glides and widens the FOV from 60° to 75° with
   speed in glides and fast falls.
+- `src/player/CharacterModel.js`: the player character, `public/models/character.glb`
+  (1.8 m, 32k triangles, 66 bones; meshopt-compressed geometry and WebP textures, loaded
+  with `GLTFLoader` + `MeshoptDecoder`). It has the same interface as the proxy.
+  - Clips: `idle` / `run` on the ground. The run cycle is in place, so its playback rate
+    follows the ground speed (clip speed 4.4 m/s). `jump` starts on the jump event, after
+    the crouch, because the controller takes off at once. `fall` plays when dropping fast,
+    and `glide` plays in a glide, tilted with the flight path and banked into turns
+    around the hips.
+  - Crossfades are 0.15–0.22 s, because the tallit is baked per clip.
+  - The capsule proxy stays on screen until the model has loaded, or if it fails to load.
 - `src/player/PlayerProxy.js`: the stand-in, a capsule with a nose plus a striped tallit
   that hangs behind on the ground and spreads like wings in a glide, fluttering with speed.
   A rigged model replaces it by providing `object3D` and `update(snapshot, dt)`.
