@@ -12,7 +12,41 @@ npm test             # node:test suite (synthetic data + the real data file when
 npm run build
 ```
 
-Controls: WASD move · Shift sprint · Space jump · E boost jump (reach rooftops) · drag to orbit · N day/night · P post-processing on/off · R respawn.
+Controls: WASD move (camera-relative) · Shift run · Space jump (hold for higher) · jump
+toward a ledge to mantle onto it · **hold Space in the air to glide** (W dive, S climb, A/D
+or mouse to steer) · click for mouse look (or drag), wheel zoom · E debug super-jump ·
+N day/night · P post-processing on/off · R respawn · H hide the controls line.
+
+## Player: traversal and tallit gliding
+
+The character is split so the stand-in can be swapped for a rigged model without touching
+the gameplay:
+
+- `src/player/PlayerController.js`: pure logic (no three.js; runs in node tests). It
+  simulates at a fixed 120 Hz against `CityCollisionWorld` and has states `ground`,
+  `slide`, `air`, `glide` and `mantle`.
+  - Ground: probes the terrain at the center plus box tops around the capsule rim (a
+    sphere-cast stand-in), snaps down slopes and small steps (0.4 m), and slides on slopes
+    over 45°. Acceleration and deceleration are smooth, facing turns toward the movement,
+    and uphill is slower.
+  - Jump: holding Space longer jumps higher (about 0.7 m tap, 1.9 m full); coyote time and
+    jump buffering are 0.12 s each.
+  - Mantle: jumping toward a wall whose top is up to 1.5 m above the feet, with room to
+    stand, climbs onto it.
+  - Glide: gravity is at 25%. The flight path follows the tallit's pitch, and diving turns
+    height into speed (quadratic drag, ~35 m/s top speed in a steep dive). Hands-off it
+    cruises at ~12 m/s, sinking ~3 m/s. A/D turn and the mouse pulls the heading along.
+    Hitting a wall stalls you.
+  - `snapshot()` returns plain data. Events (`jump`, `land`, `glideStart`, `glideEnd`,
+    `mantleStart`, `mantleEnd`, `state`) are for animation and sound.
+- `src/player/PlayerCamera.js`: third-person orbit with pointer lock or drag and zoom. It
+  drifts behind the character when the mouse is idle (faster while gliding). For
+  occlusion it casts a ray against the collision world and the terrain: it pulls in fast
+  and eases out slowly. It pulls back and widens the FOV (+14°) with glide speed.
+- `src/player/PlayerProxy.js`: the stand-in, a capsule with a nose plus a striped tallit
+  that hangs behind on the ground and spreads like wings in a glide, fluttering with speed.
+  A rigged model replaces it by providing `object3D` and `update(snapshot, dt)`.
+- `src/player/GlideEffects.js`: wind streaks that stream past during fast glides.
 
 ## Performance
 
@@ -98,8 +132,9 @@ before a commercial release.
   The boxes match the real walls to within `collisionStep / 2` (0.3 m).
 - `src/city/CityCollision.js`: static AABB world on a uniform XZ grid: `queryAABB`,
   `queryPoint`, `groundHeight`, `resolveSphere`, `resolveCapsule`, `raycast`.
-- `src/main.js`: loads the data, then sets up the renderer, lights, day/night, the test
-  player capsule and the HUD (street name, neighbourhood, touched building).
+- `src/main.js`: loads the data, then wires the renderer, lights, day/night, the player
+  (controller + camera + proxy + effects), keyboard input and the HUD (street,
+  neighbourhood, player state and speed, touched building).
 
 ## Using the collision data
 

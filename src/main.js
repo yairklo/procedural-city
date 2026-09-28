@@ -1,10 +1,13 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CityGenerator, findRoadsAt, findPlaceAt } from './city/CityGenerator.js';
 import { createLighting } from './render/lighting.js';
 import { createPostProcessing } from './render/postprocessing.js';
 import { createSurroundings } from './render/surroundings.js';
 import { createBenchmark, formatBenchmark } from './debug/benchmark.js';
+import { PlayerController } from './player/PlayerController.js';
+import { PlayerCamera } from './player/PlayerCamera.js';
+import { PlayerProxy } from './player/PlayerProxy.js';
+import { GlideEffects } from './player/GlideEffects.js';
 import './style.css';
 
 // ------------------------------------------------------------------------------------------------
@@ -25,16 +28,7 @@ renderer.info.autoReset = false; // count every pass of a frame (shadows, AO, po
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.5, 4000);
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.minDistance = 4;
-controls.maxDistance = 900;
-controls.maxPolarAngle = Math.PI * 0.49;
-controls.enablePan = false;
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.3, 4000);
 
 // ------------------------------------------------------------------------------------------------
 // Lighting + day / night
@@ -55,98 +49,48 @@ function applyLook(t) {
 }
 
 // ------------------------------------------------------------------------------------------------
-// Player (a simple capsule used to exercise the AABB collision data)
+// Player: controller (physics) + camera + stand-in visuals
 // ------------------------------------------------------------------------------------------------
 
-const PLAYER = { radius: 0.4, height: 1.8, walk: 7, sprint: 16, jump: 9, boost: 42, gravity: 25, step: 0.45 };
-
-const player = new THREE.Mesh(
-  new THREE.CapsuleGeometry(PLAYER.radius, PLAYER.height - PLAYER.radius * 2, 4, 12).translate(0, PLAYER.height / 2, 0),
-  new THREE.MeshStandardMaterial({ color: 0xff7a2f, roughness: 0.5 }),
-);
-player.castShadow = true;
-lighting.setupMaterial(player.material);
-scene.add(player);
-
-const velocity = new THREE.Vector3();
-let grounded = false;
-let lastHits = [];
+/** @type {PlayerController | null} */
+let player = null;
+/** @type {PlayerCamera | null} */
+let playerCamera = null;
+const proxy = new PlayerProxy();
+const glideFx = new GlideEffects();
+scene.add(proxy.object3D, glideFx.object3D);
+proxy.object3D.traverse((o) => o.material && lighting.setupMaterial(o.material));
 
 const keys = new Set();
+let boostQueued = false;
 window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
   keys.add(e.code);
   if (e.repeat) return;
   if (e.code === 'KeyN') nightTarget = nightTarget > 0.5 ? 0 : 1;
   if (e.code === 'KeyR') respawn();
   if (e.code === 'KeyP') post.enabled = !post.enabled;
-  if (e.code === 'Space' && grounded) velocity.y = PLAYER.jump;
-  if (e.code === 'KeyE') velocity.y = PLAYER.boost; // test jump for reaching rooftops
+  if (e.code === 'KeyE') boostQueued = true; // debug super-jump to reach rooftops
+  if (e.code === 'KeyH') showHelp = !showHelp;
 });
+let showHelp = true;
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
 
-const _forward = new THREE.Vector3();
-const _right = new THREE.Vector3();
-const _move = new THREE.Vector3();
-const _prevTarget = new THREE.Vector3();
+const held = (...codes) => codes.some((c) => keys.has(c));
 
-function updatePlayer(dt) {
-  if (!city) return;
-  const pos = player.position;
-  const collision = city.collision;
-
-  // Camera-relative input on the XZ plane.
-  camera.getWorldDirection(_forward);
-  _forward.y = 0;
-  _forward.normalize();
-  _right.crossVectors(_forward, THREE.Object3D.DEFAULT_UP);
-  _move.set(0, 0, 0);
-  if (keys.has('KeyW') || keys.has('ArrowUp')) _move.add(_forward);
-  if (keys.has('KeyS') || keys.has('ArrowDown')) _move.sub(_forward);
-  if (keys.has('KeyD') || keys.has('ArrowRight')) _move.add(_right);
-  if (keys.has('KeyA') || keys.has('ArrowLeft')) _move.sub(_right);
-  if (_move.lengthSq() > 0) _move.normalize().multiplyScalar(keys.has('ShiftLeft') || keys.has('ShiftRight') ? PLAYER.sprint : PLAYER.walk);
-  velocity.x = _move.x;
-  velocity.z = _move.z;
-  velocity.y -= PLAYER.gravity * dt;
-
-  // Sub-step so fast movement can't tunnel through thin boxes.
-  const travel = velocity.length() * dt;
-  const steps = Math.max(1, Math.ceil(travel / (PLAYER.radius * 0.5)));
-  const h = dt / steps;
-  grounded = false;
-  const hits = new Set();
-
-  for (let i = 0; i < steps; i++) {
-    pos.addScaledVector(velocity, h);
-
-    // Walls, ceilings, props.
-    const res = collision.resolveCapsule(pos, PLAYER.radius, PLAYER.height, PLAYER.step);
-    for (const b of res.hits) hits.add(b);
-    if (res.ceiling && velocity.y > 0) velocity.y = 0;
-
-    // Floor: highest surface under the feet that we can step onto (curbs, roofs, lawns).
-    const floor = collision.groundHeight(pos.x, pos.z, pos.y + PLAYER.step);
-    if (pos.y <= floor) {
-      pos.y = floor;
-      if (velocity.y < 0) velocity.y = 0;
-      grounded = true;
-    }
-  }
-  lastHits = [...hits];
-
-  // Keep the player inside the generated area.
-  const bd = city.data.bounds;
-  pos.x = THREE.MathUtils.clamp(pos.x, bd.minX, bd.maxX);
-  pos.z = THREE.MathUtils.clamp(pos.z, bd.minZ, bd.maxZ);
-}
-
-function followCamera() {
-  const target = player.position.clone();
-  target.y += PLAYER.height * 0.8;
-  camera.position.add(target.clone().sub(_prevTarget));
-  controls.target.copy(target);
-  _prevTarget.copy(target);
+function readInput() {
+  const input = {
+    moveX: (held('KeyD', 'ArrowRight') ? 1 : 0) - (held('KeyA', 'ArrowLeft') ? 1 : 0),
+    moveY: (held('KeyW', 'ArrowUp') ? 1 : 0) - (held('KeyS', 'ArrowDown') ? 1 : 0),
+    cameraYaw: playerCamera?.yaw ?? 0,
+    cameraSteer: playerCamera?.steering ?? false,
+    jump: held('Space'),
+    sprint: held('ShiftLeft', 'ShiftRight'),
+    boost: boostQueued,
+  };
+  boostQueued = false;
+  return input;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -185,12 +129,17 @@ function buildCity({ osm, elevation }) {
     if (o.userData.detail) lighting.nearShadowsOnly(o);
   });
   city.setNight(night);
+
+  player = new PlayerController(city.collision, city.data.spawn);
+  playerCamera ??= new PlayerCamera(camera, renderer.domElement, city.collision);
+  playerCamera.setCollision(city.collision);
+  player.on('land', (e) => e.impact > 12 && console.debug(`[player] hard landing ${e.impact.toFixed(1)} m/s`));
   respawn();
 
   // Handy for debugging from the devtools console.
   window.city = city;
   window.debug = {
-    camera, controls, player, scene, renderer, lighting, post,
+    camera, playerCamera, player, proxy, scene, renderer, lighting, post,
     setNight: (v) => { night = nightTarget = v; applyLook(v); },
   };
   console.info(`[city] ${city.data.name}`, city.data.stats);
@@ -198,14 +147,9 @@ function buildCity({ osm, elevation }) {
 
 /** Puts the player back on the spawn street, camera behind them looking along the road. */
 function respawn() {
-  if (!city) return;
-  const s = city.data.spawn;
-  player.position.set(s.x, s.y, s.z);
-  velocity.set(0, 0, 0);
-  _prevTarget.set(s.x, s.y + PLAYER.height * 0.8, s.z);
-  camera.position.set(s.x - Math.sin(s.heading) * 14, s.y + 7, s.z - Math.cos(s.heading) * 14);
-  controls.target.copy(_prevTarget);
-  controls.update();
+  if (!city || !player) return;
+  player.reset(city.data.spawn);
+  playerCamera.snapTo(player.snapshot());
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -218,28 +162,35 @@ let hudTimer = 0;
 function updateHud(dt) {
   frames++;
   hudTimer += dt;
-  if (hudTimer < 0.25 || !city) return;
+  if (hudTimer < 0.25 || !city || !player) return;
   const fps = Math.round(frames / hudTimer);
   frames = 0;
   hudTimer = 0;
 
   const { data } = city;
-  const p = player.position;
+  const s = player.snapshot();
+  const p = s.position;
   const roads = findRoadsAt(data, p.x, p.z);
   const place = findPlaceAt(data, p.x, p.z);
   const named = [...new Set(roads.map((r) => r.name).filter(Boolean))];
   const where = named.length ? named.join(' & ') : roads.length ? `unnamed ${roads[0].highway}` : 'off-street';
-  const touching = lastHits.find((b) => b.kind === 'building');
+  const touching = player.hits.find((b) => b.kind === 'building');
   const touched = touching ? data.buildingById.get(touching.ref) : null;
+  const locked = document.pointerLockElement === renderer.domElement;
 
   const info = renderer.info.render;
   hud.innerHTML =
     `<strong>${data.name}</strong>${place ? ` <span class="dim">· ${place.name}</span>` : ''}\n` +
     `${fps} fps · ${info.calls} draw calls/frame (all passes) · ${(info.triangles / 1000).toFixed(0)}k tris\n` +
-    `${data.stats.buildings} buildings · ${data.stats.colliders} colliders · built in ${data.stats.generateMs + data.stats.buildMs} ms\n` +
     `<span class="dim">at</span> ${where}  <span class="dim">${(p.y + data.terrain.datum).toFixed(0)} m ASL</span>\n` +
+    `<span class="dim">${s.state}</span> ${s.horizontalSpeed.toFixed(1)} m/s` +
+    (s.state === 'glide' ? ` · sink ${(-s.velocity.y).toFixed(1)} m/s · pitch ${((s.glidePitch * 180) / Math.PI).toFixed(0)}°` : '') +
+    (s.grounded && s.slopeDeg > 1 ? ` · slope ${s.slopeDeg.toFixed(0)}°` : '') + '\n' +
     (touched ? `<span class="dim">touching</span> ${touched.name ?? touched.address ?? touched.id} · ${touched.heightAboveGround.toFixed(1)} m (${touched.heightSource})\n` : '') +
-    `<span class="dim">WASD move · Shift sprint · Space jump · E boost · drag to orbit · N day/night · P post-fx ${post.enabled ? 'on' : 'off'} · R respawn</span>\n` +
+    (showHelp
+      ? `<span class="dim">WASD move · Shift run · Space jump (hold: higher) · hold Space in the air: glide (W dive · S climb · A/D or mouse steer) · ` +
+        `${locked ? 'Esc frees the mouse' : 'click: mouse look'} · wheel zoom · E boost · N night · P post-fx ${post.enabled ? 'on' : 'off'} · R respawn · H hide</span>\n`
+      : `<span class="dim">H: controls</span>\n`) +
     `<span class="dim">${data.source.attribution}${data.terrain.source ? ` · ${data.terrain.source.attribution}` : ''}</span>`;
 }
 
@@ -262,7 +213,8 @@ const timer = new THREE.Clock();
 
 // ?bench runs a fixed camera benchmark (add &night for the night look).
 const params = new URLSearchParams(window.location.search);
-const bench = params.has('bench') ? createBenchmark({ camera, controls, renderer }) : null;
+const benchControls = { enabled: true }; // the benchmark flies the camera itself
+const bench = params.has('bench') ? createBenchmark({ camera, controls: benchControls, renderer }) : null;
 if (params.has('night')) night = nightTarget = 1;
 
 applyLook(night);
@@ -283,10 +235,12 @@ renderer.setAnimationLoop(() => {
 
   if (bench && city && !bench.running && !bench.result) bench.start(city.data.spawn);
   const benchFrame = bench?.running ? bench.update() : null;
-  if (!benchFrame) {
-    updatePlayer(dt);
-    followCamera();
-    controls.update();
+  if (player) {
+    if (!benchFrame) player.update(dt, readInput());
+    const snap = player.snapshot();
+    proxy.update(snap, dt);
+    glideFx.update(snap, dt);
+    if (!benchFrame) playerCamera.update(dt, snap);
   }
   lighting.update();
   surroundings.update(camera);

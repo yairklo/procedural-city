@@ -116,6 +116,11 @@ export class CityCollisionWorld {
     return this.groundHeightAt ? this.groundHeightAt(x, z) : 0;
   }
 
+  /** Unit terrain normal at (x, z) ({0, 1, 0} when there is no terrain). */
+  terrainNormal(x, z) {
+    return this.groundHeightAt ? this._terrainNormal(x, z) : { x: 0, y: 1, z: 0 };
+  }
+
   /**
    * Height of the highest box top under (x, z) that is at or below `maxY`, or the terrain
    * (`baseHeight`, default: terrainHeight) when that is higher.
