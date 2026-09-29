@@ -16,7 +16,7 @@ npm run build
 Controls: WASD move (camera-relative) · Shift run · Space jump (hold for higher) · jump
 toward a ledge to mantle onto it · **hold Space in the air to glide** (W dive, S climb, A/D
 or mouse to steer) · click for mouse look (or drag), wheel zoom · E debug super-jump ·
-N day/night · L festival lighting · C free camera (WASD fly, Q/E down/up, Shift fast, wheel speed) · M mute the
+N day/night · L ceremonial lighting · C free camera (WASD fly, Q/E down/up, Shift fast, wheel speed) · M mute the
 wind · B hide the stats panel · G minimap · P post-processing on/off · R respawn · H hide the controls line.
 
 ## Living city (Phase 4)
@@ -295,27 +295,38 @@ the way the real places are lit:
 - `sodium`: the Old City walls, the gates, the Citadel and the Temple Mount's retaining
   walls. Warm yellow uplights at the foot of the walls: bright low, fading with the height,
   so the walls glow gold over the Hinnom and Kidron valleys.
-- `warm`: the Temple Mount buildings, the Western Wall and the churches, in warm white.
-  Floodlit gold (the Dome of the Rock) blazes.
-- `white`: the Knesset and the Chords Bridge, in cool white.
-- `dark`: the Mount of Olives cemetery stays dark.
-- Festival (the L key), as for the Light Festival and national days: the walls become a
-  projection screen, with blue-and-white bands rising up them, then colour fields sweeping
-  along with twinkling points.
+- `warm`: the Temple Mount buildings, the Western Wall, the churches, and the Hinnom Valley
+  buildings, windmill and pool walls, in warm white. Floodlit gold (the Dome of the Rock)
+  blazes.
+- `blue`: the Knesset. Deep royal-blue uplighting on the colonnade and the facade (the
+  light's own colour, not tinted by the stone).
+- `neon`: the line of white light along the Knesset's roof edge.
+- `white`: the Chords Bridge, the Knesset's flags and its office wing.
+- `dark`: the Mount of Olives cemetery and the Hinnom Valley slopes (terraces, scarps,
+  tombs).
+- Glowing surfaces cut through the night haze (the fog is weakened by up to 80% where they
+  glow), so the lit walls, the Knesset and the bridge read from across the city.
+- Ceremonial lighting (the L key), as on national days, in the city's own palette: no
+  rainbow colours. Two 30 s programmes crossfade:
+  - blue and white floodlights alternating along the walls in broad sections;
+  - gold, with a band of warm white light moving slowly along the walls.
 
 The Chords Bridge light show (`bridgeLights.js`). The real bridge has 14,400 LEDs on 58 of
-its 66 cables and plays clips and messages on them. Here the cables are a pixel screen too:
-across the strings, and along each one, with 248 LEDs per lit string (the eight shortest
-cables stay dark). Programmes of 16 s crossfade into each other:
+its 66 cables and plays clips and messages on them, mostly blue and white on national days.
+Here the cables are a pixel screen too: across the strings, and along each one, with 248
+LEDs per lit string (the eight shortest cables stay dark). Programmes of 16 s crossfade into
+each other, in warm white, gold and the national blue and white:
 
 1. a harp whose strings are plucked in turn;
 2. the flag, with the Star of David outlined across the strings;
-3. a rainbow sweep;
-4. sparks racing up to the pylon;
-5. ripples from the middle;
+3. blue and white bands sweeping across the strings;
+4. golden sparks racing up to the pylon;
+5. golden ripples over deep blue;
 6. "ירושלים · JERUSALEM" scrolling across the strings.
 
-The cables are their own mesh: white steel by day, glowing LEDs at night (with bloom).
+From afar the cables are thinner than a pixel, so a glow sheet spanning the lit strings
+plays the same programme. It fades in with distance (full from ~350 m), is additive and
+unfogged, and keeps the harp of light visible from the city centre.
 
 Around the walls, a few rules keep the generic buildings believable:
 

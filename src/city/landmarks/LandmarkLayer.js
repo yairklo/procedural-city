@@ -811,6 +811,8 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
     /** Every material the layer made (the stone, the Chords Bridge LEDs): for shadow setup. */
     materials,
     stats,
+    /** The show uniforms (time, festival), for other landmark layers to share. */
+    show,
     /** Per frame: drives the Chords Bridge light show and the festival projections. */
     update(time) {
       show.uLmTime.value = time;

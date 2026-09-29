@@ -13,7 +13,7 @@
 import * as THREE from 'three';
 
 /** Night lighting profiles (materials.js): how a landmark is floodlit. */
-export const LIGHT = Object.freeze({ wash: 0, sodium: 1, white: 2, warm: 3, dark: 4 });
+export const LIGHT = Object.freeze({ wash: 0, sodium: 1, white: 2, warm: 3, dark: 4, blue: 5, neon: 6 });
 
 export const STYLE = Object.freeze({ ashlar: 0, herodian: 1, lead: 2, wood: 3, metal: 4, foliage: 5, paving: 6, plain: 7, tile: 8, gold: 9, marble: 10 });
 

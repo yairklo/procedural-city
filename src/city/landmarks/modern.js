@@ -96,6 +96,10 @@ function buildKnesset(mod, ctx) {
     }
   }
 
+  // Night: the Knesset is floodlit blue from below, with a line of white light along the roof
+  // edge (flags, wings: white).
+  m.light = LIGHT.blue;
+
   // --- podium ---------------------------------------------------------------------------------
   const pod = 5;
   const podRing = rect(-hl - pod, hl + pod, -hw - pod, hw + pod);
@@ -156,6 +160,19 @@ function buildKnesset(mod, ctx) {
   m.paint(C.stone, 0.45, 2.2, STYLE.ashlar);
   m.prism(roofRing, floor + H, roofTop, { top: true, bottom: true });
   addFootprint([roofRing], floor + H, roofTop, 'building', 'knesset');
+  // The white line of light along the top of the fascia, all round.
+  m.light = LIGHT.neon;
+  m.paint(0xffffff, 1, 1, STYLE.plain);
+  for (let i = 0; i < roofRing.length; i += 2) {
+    const j = (i + 2) % roofRing.length;
+    const ax2 = roofRing[i], az2 = roofRing[i + 1], bx2 = roofRing[j], bz2 = roofRing[j + 1];
+    const l = Math.hypot(bx2 - ax2, bz2 - az2) || 1;
+    let nx2 = (bz2 - az2) / l, nz2 = -(bx2 - ax2) / l;
+    if ((ax2 - box.cx) * nx2 + (az2 - box.cz) * nz2 < 0) { nx2 = -nx2; nz2 = -nz2; }
+    const o = 0.04;
+    m.quad([ax2 + nx2 * o, roofTop - 0.28, az2 + nz2 * o], [bx2 + nx2 * o, roofTop - 0.28, bz2 + nz2 * o], [bx2 + nx2 * o, roofTop - 0.08, bz2 + nz2 * o], [ax2 + nx2 * o, roofTop - 0.08, az2 + nz2 * o], [nx2, 0, nz2]);
+  }
+  m.light = LIGHT.blue;
   // The plenum hall rises through the roof: a stone drum-block with a low pleated roof.
   const lw = Math.min(hl, hw) * 0.42;
   const lantern = rect(-lw * 1.15, lw * 1.15, -lw, lw);
@@ -209,6 +226,7 @@ function buildKnesset(mod, ctx) {
     }
     addBox({ minX: x - 0.1, maxX: x + 0.1, minZ: z - 0.1, maxZ: z + 0.1, minY: y, maxY: y + 12 }, 'pole', 'knesset-flag');
   };
+  m.light = LIGHT.white;
   for (const s of [-12, -6, 6, 12]) flag(box.cx + front.dx * (front.half + 2.5) + fux * s, box.cz + front.dz * (front.half + 2.5) + fuz * s, floor);
 
   // --- office wings: low stone blocks around courtyards, continuous window bands ---------------
@@ -251,7 +269,8 @@ function buildKnesset(mod, ctx) {
     wings++;
   }
 
-  finish(m, 'Knesset', LIGHT.white);
+  m.light = null;
+  finish(m, 'Knesset', LIGHT.blue);
   const out = { knesset: true, knessetPiers: piers, knessetWings: wings };
 
   // --- the Knesset Menorah ---------------------------------------------------------------------
@@ -430,7 +449,7 @@ function buildChordsBridge(cb, ctx) {
   if (ctx.group && ctx.show) {
     const leds = createCableLights(cables, ctx.uniforms, ctx.show);
     ctx.group.add(leds.mesh);
-    ctx.materials?.push(leds.material);
+    ctx.materials?.push(leds.material, leds.glowMaterial);
   } else {
     m.paint(C.steel, 1, 1, STYLE.metal);
     for (const c of cables) kit.tube(c.top, c.anchor, 0.07, 0.07, 4, { caps: false });

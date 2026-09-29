@@ -17,13 +17,17 @@
 //               steep south side and around the mapped burial sites (Ketef Hinnom, Akeldama)
 //               bare rock scarps instead, with the dark doorways of rock-cut tombs
 //
+// Night: the buildings, the windmill and the pool walls are floodlit warm white like the Old
+// City across the valley (materials.js profiles, geometry.js LIGHT); the terraces, rock
+// scarps and tombs on the open slopes stay dark.
+//
 // The stone goes into one mesh with the landmark material (one draw call per pass); the trees
 // are two instanced meshes sharing the city's street-prop geometry and material. Everything
 // solid adds collision boxes under the group 'hinnom'. The pool floors are terrain patches
 // (hinnom.json `patches`), merged into the elevation data in main.js.
 
 import * as THREE from 'three';
-import { Mesher, STYLE, signedArea } from './geometry.js';
+import { Mesher, STYLE, LIGHT, signedArea } from './geometry.js';
 import { createLandmarkMaterial } from './materials.js';
 import { decomposeFootprint, orientedBox } from '../footprint.js';
 
@@ -104,8 +108,8 @@ export function archOutline(w, yBase, spring, k = 6) {
  * @param {object} data  parsed hinnom.json
  * @param {object} ctx   { projection, terrain, collision, uniforms, props?: { material, olive, cypress } }
  */
-export function buildHinnom(data, { projection, terrain, collision, uniforms, props = null }) {
-  const material = createLandmarkMaterial(uniforms);
+export function buildHinnom(data, { projection, terrain, collision, uniforms, props = null, show = undefined }) {
+  const material = createLandmarkMaterial(uniforms, show);
   const group = new THREE.Group();
   group.name = 'Hinnom';
   const ground = (x, z) => terrain.heightAt(x, z);
@@ -526,6 +530,7 @@ export function buildHinnom(data, { projection, terrain, collision, uniforms, pr
   }
 
   // --- Terraces and groves on the valley slopes ---------------------------------------------------
+  m.light = LIGHT.dark; // not floodlit
   const trees = { olive: [], cypress: [] };
   if (data.slopes) {
     const S = data.slopes;
@@ -637,8 +642,9 @@ export function buildHinnom(data, { projection, terrain, collision, uniforms, pr
   }
 
   // --- Meshes ----------------------------------------------------------------------------------
+  m.light = null;
   if (!m.empty) {
-    const mesh = new THREE.Mesh(m.geometry(), material);
+    const mesh = new THREE.Mesh(m.geometry((x, z) => terrain.heightAt(x, z), LIGHT.warm), material);
     mesh.name = 'Landmark(Hinnom)';
     mesh.castShadow = true;
     mesh.receiveShadow = true;

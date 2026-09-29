@@ -261,7 +261,11 @@ test('night lighting: floodlight profiles per landmark, the Chords Bridge LED sc
   };
   assert.equal(profile('CityWalls'), LIGHT.sodium, 'the Old City walls: sodium uplights');
   assert.equal(profile('TowerOfDavid'), LIGHT.sodium);
-  assert.equal(profile('Knesset'), LIGHT.white);
+  assert.equal(profile('Knesset'), LIGHT.blue, 'the Knesset is floodlit blue');
+  const kn = lm.group.getObjectByName('Landmark(Knesset)').geometry.getAttribute('aLight');
+  let neon = 0;
+  for (let i = 0; i < kn.count; i++) if (kn.getY(i) === LIGHT.neon) neon++;
+  assert.ok(neon >= 24, 'with a white line of light along its roof edge');
   assert.equal(profile('Haram'), LIGHT.warm);
   assert.equal(profile('OliveCemetery'), LIGHT.dark, 'the cemetery is not floodlit');
   // Heights above the ground feed the uplight falloff: the walls' tops are well above 0.
