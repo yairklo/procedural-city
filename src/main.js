@@ -308,7 +308,7 @@ async function loadWorld() {
   window.debug = {
     landmarks: landmarkLayer,
     hinnom: hinnomLayer,
-    camera, playerCamera, player, proxy, character, scene, renderer, lighting, post, world, pedestrians, traffic, freeCam, wind,
+    THREE, camera, playerCamera, player, proxy, character, scene, renderer, lighting, post, world, pedestrians, traffic, freeCam, wind,
     setNight: (v) => { night = nightTarget = v; applyLook(v); },
   };
   console.info('[world]', world.stats(), `legacy: ${world.legacy ? `${world.legacy.kept} features kept, ${world.legacy.skipped} superseded by tiles` : 'none'}`);

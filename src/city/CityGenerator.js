@@ -1835,7 +1835,8 @@ float surfRough = 0.0;
   diffuseColor.rgb *= mix(1.0, 0.9, worn);
   diffuseColor.rgb += vec3(0.02, 0.012, 0.0) * worn;
   surfRough = -0.55 * worn * (1.0 - fade * 0.5);
-  vec2 tilt = (vec2(cityHash(vec3(floor(cell), 11.0)), cityHash(vec3(floor(cell), 12.0))) - 0.5) * 0.09 * worn * (1.0 - fade);
+  // Per-slab tilts (moving glints) only where slabs are large on screen: tiny glinting slabs flicker.
+  vec2 tilt = (vec2(cityHash(vec3(floor(cell), 11.0)), cityHash(vec3(floor(cell), 12.0))) - 0.5) * 0.09 * worn * (1.0 - smoothstep(0.03, 0.1, max(aa.x, aa.y)));
   surfBump = vec2(cityBevel(f.x, 1.0 - f.x, 0.012, 0.05), cityBevel(f.y, 1.0 - f.y, 0.018, 0.07)) * -0.3 * (1.0 - fade) + tilt;
 #elif defined(SURF_ASPHALT)
   float grain = cityHash(vec3(floor(p * 30.0), 1.0));
@@ -1843,17 +1844,16 @@ float surfRough = 0.0;
   float fine = cityFbm(p * 1.3);
   float patched = step(0.78, cityNoise(p * 0.05 + 17.0)) * step(0.35, cityNoise(p * 0.4));
   vec2 gaa = fwidth(p * 30.0);
-  float gfade = smoothstep(0.5, 1.5, max(gaa.x, gaa.y));
+  float gfade = smoothstep(0.15, 0.5, max(gaa.x, gaa.y)); // grains fade out well before they get sub-pixel
   vec3 a = base * mix(0.8, 1.25, mottle) * mix(0.9, 1.08, fine);
   a *= mix(mix(0.85, 1.15, grain), 1.0, gfade);
   a = mix(a, base * 0.7, patched);
   diffuseColor.rgb = a;
   surfBump = (vec2(grain, cityHash(vec3(floor(p * 30.0), 2.0))) - 0.5) * 0.25 * (1.0 - gfade);
-  // Smoother binder-rich patches and polished wheel paths, plus the odd smooth aggregate
-  // grain that sparkles in low sun.
+  // Smoother binder-rich patches and polished wheel paths (broad areas only: single sub-pixel
+  // grains catching the sun made fireflies that bloom turned into flashes).
   float sealed = smoothstep(0.55, 0.8, cityFbm(p * 0.35 + 9.0));
-  float sparkle = step(0.965, cityHash(vec3(floor(p * 30.0), 3.0))) * (1.0 - gfade);
-  surfRough = -0.1 * mottle - 0.22 * sealed - 0.35 * sparkle;
+  surfRough = -0.1 * mottle - 0.22 * sealed;
 #elif defined(SURF_CURB)
   float seg = fract((p.x + p.y) / 0.9);
   float joint = 1.0 - smoothstep(0.0, 0.03 + fwidth((p.x + p.y) / 0.9), min(seg, 1.0 - seg));
@@ -1865,10 +1865,20 @@ float surfRough = 0.0;
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.36, 0.22), smoothstep(0.6, 0.85, cityNoise(p * 0.15 + 5.0)) * 0.6);
 #elif defined(SURF_MARKING)
   diffuseColor.rgb = base * mix(0.55, 1.0, smoothstep(0.25, 0.7, cityFbm(p * 2.0)));
+  // Prefiltering: the paint lines are 7 cm wide; once a pixel covers more than that, the line
+  // only hits some pixels in some frames (white on dark asphalt: blinking, and bloom made it
+  // flash). Fade it into the asphalt colour as it gets thinner than a pixel, so where it still
+  // rasterizes it matches the road under it. (Lane lines fade out at a distance in life too.)
+  float markPx = length(fwidth(vSurfPos));
+  vec3 asphaltBase = vec3(${new THREE.Color(COLORS.asphalt).r.toFixed(4)}, ${new THREE.Color(COLORS.asphalt).g.toFixed(4)}, ${new THREE.Color(COLORS.asphalt).b.toFixed(4)});
+  diffuseColor.rgb = mix(diffuseColor.rgb, asphaltBase, smoothstep(0.025, 0.09, markPx));
 #endif
 }`,
       )
-      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + surfRough, 0.25, 1.0);')
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+roughnessFactor = clamp(roughnessFactor + surfRough, 0.25, 1.0);
+// Specular anti-aliasing: the more ground a pixel covers, the less glossy it may look.
+roughnessFactor = max(roughnessFactor, smoothstep(0.02, 0.25, length(fwidth(vSurfPos))) * 0.75);`)
       .replace(
         '#include <emissivemap_fragment>',
         /* glsl */ `#include <emissivemap_fragment>
@@ -2178,7 +2188,7 @@ vec2 groundBump = vec2(0.0);
   pave += vec3(0.02, 0.012, 0.0) * worn * slabTop;
   float quietRough = 0.04 * (cityFbm(p * 0.6) - 0.5);
   groundRough = (quietRough - 0.55 * worn * slabTop * (1.0 - fade * 0.5)) * groundCity;
-  vec2 tilt = (vec2(cityHash(vec3(slabId, 11.0)), cityHash(vec3(slabId, 12.0))) - 0.5) * 0.09 * worn * (1.0 - fade);
+  vec2 tilt = (vec2(cityHash(vec3(slabId, 11.0)), cityHash(vec3(slabId, 12.0))) - 0.5) * 0.09 * worn * (1.0 - smoothstep(0.03, 0.1, max(aa.x, aa.y)));
 
   // Hillside: dry grass and terra rossa, limestone showing through on steeper slopes.
   float n1 = cityFbm(p * 0.012), n2 = cityFbm(p * 0.09 + 7.0), n3 = cityHash(vec3(floor(p * 2.0), 9.0));
@@ -2197,7 +2207,9 @@ vec2 groundBump = vec2(0.0);
         /* glsl */ `#include <normal_fragment_maps>
 normal = normalize(normal + normalize((viewMatrix * vec4(1.0, 0.0, 0.0, 0.0)).xyz) * groundBump.x + normalize((viewMatrix * vec4(0.0, 0.0, 1.0, 0.0)).xyz) * groundBump.y);`,
       )
-      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + groundRough, 0.25, 1.0);')
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+roughnessFactor = clamp(roughnessFactor + groundRough, 0.25, 1.0);
+roughnessFactor = max(roughnessFactor, smoothstep(0.02, 0.25, length(fwidth(vGPos))) * 0.75); // specular anti-aliasing`)
       .replace(
         '#include <emissivemap_fragment>',
         /* glsl */ `#include <emissivemap_fragment>

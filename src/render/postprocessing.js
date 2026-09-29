@@ -70,6 +70,12 @@ export function createPostProcessing(renderer, scene, camera) {
   };
   composer.addPass(gtao);
 
+  // Firefly clamp: a soft cap on single-pixel HDR spikes (a sun glint on one sub-pixel facet)
+  // so bloom can't blow them up into flashing halos. Real light sources (LEDs, lanterns,
+  // headlights: 3-4) are well below the cap.
+  const fireflies = new ShaderPass(FireflyClampShader);
+  composer.addPass(fireflies);
+
   const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), BLOOM.day.strength, BLOOM.day.radius, BLOOM.day.threshold);
   bloom.highPassUniforms.smoothWidth.value = BLOOM.day.knee; // soft knee: no hard-edged halos
   composer.addPass(bloom);
@@ -111,6 +117,25 @@ export function createPostProcessing(renderer, scene, camera) {
     },
   };
 }
+
+/** Soft luminance cap before bloom (linear HDR): above `limit`, brightness compresses. */
+const FireflyClampShader = {
+  name: 'FireflyClampShader',
+  uniforms: { tDiffuse: { value: null }, limit: { value: 5.0 } },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float limit;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+      if (l > limit) c.rgb *= (limit + log(1.0 + l - limit)) / l;
+      gl_FragColor = c;
+    }`,
+};
 
 /** Bloom by time of day (thresholds are linear-HDR luminance, before exposure). */
 export const BLOOM = Object.freeze({
