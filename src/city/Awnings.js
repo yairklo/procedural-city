@@ -5,7 +5,8 @@
 // from ~0.3 to 2.6 m above the building's ground floor with a sign band above. Awnings use the
 // same grid, so each one sits over a real shopfront, just above the glass and below the sign.
 // Only walls that face a street get them (a road within a few meters in front), and not where
-// the sidewalk has climbed above the shop floor (hillside streets).
+// the sidewalk has climbed above the shop floor or dropped well below it (hillside and
+// stepped streets: the awning would hang in the air).
 //
 // Instanced: one unit geometry (1 m wide, 1 m deep, sloping down and out, with a front
 // valance and side cheeks) scaled per awning; two materials, striped and solid.
@@ -34,7 +35,9 @@ export function generateAwnings({ buildings, roadsAt, ground, rng, share = 0.6 }
   const out = [];
   for (const b of buildings) {
     const f = b.facade;
-    if (!f || f[2] < 0.5 || f[1] <= 0 || b.kind !== 'building' || b.heightAboveGround < 3.6) continue;
+    // facade[2] = shop (0 / 1) + 2 * style; the Old City's souk shops (style 1) have no awnings.
+    const style = Math.floor((f?.[2] ?? 0) / 2 + 0.01), shop = (f?.[2] ?? 0) - style * 2;
+    if (!f || shop < 0.5 || style === 1 || f[1] <= 0 || b.kind !== 'building' || b.heightAboveGround < 3.6) continue;
     const striped = rng.chance(0.55);
     const color = rng.pick(striped ? AWNING_COLORS.striped : AWNING_COLORS.solid);
     const floorY = f[3];
@@ -64,6 +67,7 @@ export function generateAwnings({ buildings, roadsAt, ground, rng, share = 0.6 }
         const px = ax + (bx - ax) * t, pz = az + (bz - az) * t;
         const g = ground(px + nx * 1.2, pz + nz * 1.2);
         if (g > floorY + 0.5) continue; // the sidewalk has climbed over the shopfront
+        if (g < floorY - 0.8) continue; // or dropped well below it (stepped streets): it would hang in the air
         const d = 1.1 + rng.next() * 0.35;
         out.push({ x: px + nx * 0.04, y: floorY + GLASS_TOP, z: pz + nz * 0.04, ry: Math.atan2(nx, nz), w: 3.3, d, color, striped });
       }

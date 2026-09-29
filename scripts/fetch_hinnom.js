@@ -47,10 +47,10 @@ export const ELEVATION = Object.freeze({ poolSouth: 724.5, poolNorth: 728.5 });
 // Mount Zion, across the pool from Mishkenot: 2-3 storey stone buildings (schools, churches,
 // monasteries) around the Dormition, not the modern city's blocks. No mapped outline: an
 // approximate box (lat, lon) from the pool's east side to the Old City wall, flagged as such.
-export const MOUNT_ZION = Object.freeze({ name: 'Mount Zion', approximate: true, floorsMin: 2, floorsMax: 3, shops: false,
+export const MOUNT_ZION = Object.freeze({ name: 'Mount Zion', approximate: true, floorsMin: 2, floorsMax: 3, shops: false, facade: 'old',
   ring: [31.7736, 35.2266, 31.7736, 35.2312, 31.7688, 35.2312, 31.7688, 35.2266] });
 // Abu Tor, on the valley's south rim: 2-4 storey houses stepped down the slope (approximate box).
-export const ABU_TOR = Object.freeze({ name: 'Abu Tor', approximate: true, floorsMin: 2, floorsMax: 4, shops: false,
+export const ABU_TOR = Object.freeze({ name: 'Abu Tor', approximate: true, floorsMin: 2, floorsMax: 4, shops: false, facade: 'historic',
   ring: [31.7693, 35.2268, 31.7693, 35.2328, 31.7640, 35.2328, 31.7640, 35.2268] });
 
 /** Slope mask: cell size (m) and how far from the valley line open ground counts. */
@@ -276,7 +276,7 @@ export function extractHinnom(osm, worldBBox) {
     sites,
     // Yemin Moshe: 2-3 storeys, and its (large, row-house) blocks mapped with a pitched roof get one.
     lowRise: [
-      ...(yeminMoshe ? [{ name: 'Yemin Moshe', ring: yeminMoshe.ring, floorsMin: 2, floorsMax: 3, shops: false, tileRoofMaxArea: 1400 }] : []),
+      ...(yeminMoshe ? [{ name: 'Yemin Moshe', ring: yeminMoshe.ring, floorsMin: 2, floorsMax: 3, shops: false, facade: 'historic', tileRoofMaxArea: 1400 }] : []),
       { ...MOUNT_ZION, ring: [...MOUNT_ZION.ring] },
       { ...ABU_TOR, ring: [...ABU_TOR.ring] },
     ],

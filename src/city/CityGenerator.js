@@ -42,7 +42,11 @@ export const DEFAULT_CITY_OPTIONS = Object.freeze({
    * storeys inside the Old City walls instead of the modern city's defaultFloorsMin-Max; the
    * Temple Mount: 1 storey, `shops: false`). The first area containing a building wins.
    * Optional `tileRoofMaxArea` overrides the option below inside the area (Yemin Moshe: its
-   * row houses are mapped as large blocks with a pitched roof).
+   * row houses are mapped as large blocks with a pitched roof); optional `windows` scales the
+   * window density (0.3: mostly blank stone, as around the Temple Mount esplanade); optional
+   * `facade` picks the facade style ('old': the Old City, 'historic': the 19th / early 20th
+   * century neighbourhoods, 'downtown': the commercial centre; default modern). Without
+   * floorsMin / floorsMax the area keeps the default storeys.
    */
   lowRiseAreas: [],
   /** How far building walls continue below the lowest ground point under them (hides gaps on slopes). */
@@ -119,6 +123,11 @@ const MAJOR = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 
 export const MAJOR_HIGHWAYS = MAJOR;
 
 const SMALL_TYPES = new Set(['kiosk', 'shed', 'garage', 'garages', 'hut', 'cabin', 'toilets', 'service', 'transformer_tower', 'container', 'guardhouse']);
+// Free-standing footprints this small are booths, kiosks and guard posts (the police posts in
+// the Damascus Gate plaza): one storey, no shopfront, few windows.
+const TINY_AREA = 45;
+// Facade styles (the shader's aFacade.z carries shop + 2 * style).
+export const FACADE_STYLES = Object.freeze({ modern: 0, old: 1, historic: 2, downtown: 3 });
 const RELIGIOUS_TYPES = new Set(['church', 'cathedral', 'chapel', 'mosque', 'synagogue', 'religious', 'temple', 'shrine', 'monastery', 'convent']);
 const MONUMENT_TYPES = new Set(['ruins', 'tomb', 'monument', 'mausoleum']);
 const MONUMENT_HISTORIC = new Set(['tomb', 'monument', 'memorial', 'archaeological_site', 'ruins', 'wayside_shrine']);
@@ -178,7 +187,7 @@ export function resolveHeight(tags, area, id, o = DEFAULT_CITY_OPTIONS) {
   } else {
     let lo = o.defaultFloorsMin, hi = o.defaultFloorsMax;
     const cls = buildingClass(tags);
-    if (SMALL_TYPES.has(type) || area < 30) lo = hi = 1;
+    if (SMALL_TYPES.has(type) || area < TINY_AREA) lo = hi = 1;
     // Tombs and monuments: a single tall-ish stone mass; churches and mosques: one high
     // volume (nave), not a stack of apartment floors.
     else if (cls === 'monument') lo = hi = 2;
@@ -272,7 +281,7 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
   let heightFromOsm = 0;
 
   const excluded = new Set(o.excludeBuildings ?? []);
-  const lowRise = (o.lowRiseAreas ?? []).map((a) => ({ rings: [proj.projectFlat(a.ring)], shops: a.shops ?? true, o: { ...o, defaultFloorsMin: a.floorsMin ?? 2, defaultFloorsMax: a.floorsMax ?? 3, tileRoofMaxArea: a.tileRoofMaxArea ?? o.tileRoofMaxArea } }));
+  const lowRise = (o.lowRiseAreas ?? []).map((a) => ({ rings: [proj.projectFlat(a.ring)], shops: a.shops ?? true, windows: a.windows ?? 1, style: FACADE_STYLES[a.facade] ?? 0, o: { ...o, defaultFloorsMin: a.floorsMin ?? (a.floorsMax ? 2 : o.defaultFloorsMin), defaultFloorsMax: a.floorsMax ?? (a.floorsMin ? 3 : o.defaultFloorsMax), tileRoofMaxArea: a.tileRoofMaxArea ?? o.tileRoofMaxArea } }));
   for (const src of osm.buildings ?? []) {
     if (excluded.size && (excluded.has(src.id) || excluded.has(String(src.id).split('-')[0]))) continue;
     const rings = projectRings(src.rings);
@@ -299,7 +308,9 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
     const topY = canopy ? ground.max + h.top : ground.max + h.top;
     const stone = mixHex(styleRng.pick(STONE), styleRng.pick(STONE), styleRng.next());
     const cls = buildingClass(tags);
-    const shop = cls !== 'ordinary' || (area0 && !area0.shops) ? 0 : tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
+    // Low-rise areas may have no shops (the Temple Mount) or shops everywhere (`shops: 'all'`,
+    // a market street); tiny booths never get a shopfront.
+    const shop = cls !== 'ordinary' || (area0 && !area0.shops) || area < TINY_AREA ? 0 : area0?.shops === 'all' || tags.shop || tags.amenity ? 1 : styleRng.chance(0.35) ? 1 : 0;
     const street = tags['addr:street'];
     const roof = !canopy && PITCHED_ROOFS.has(tags['roof:shape']) && area <= (area0 ? area0.o : o).tileRoofMaxArea && h.floors <= o.tileRoofMaxFloors
       ? hipRoof(rings[0], area, topY, o, styleRng)
@@ -328,7 +339,7 @@ export function generateCityChunk(osm, { projection: proj, terrain = FLAT_TERRAI
       color: canopy ? COLORS.canopy : stone,
       // Facade shader inputs: (random seed, window density, ground-floor shops, ground-floor Y).
       // Window density: none on monuments, sparse on religious buildings and sheds.
-      facade: [styleRng.next(), canopy || h.floors < 1 || cls === 'monument' ? 0 : cls === 'religious' || SMALL_TYPES.has(tags.building) ? 0.3 : 1, canopy ? 0 : shop, ground.min],
+      facade: [styleRng.next(), canopy || h.floors < 1 || cls === 'monument' ? 0 : cls === 'religious' || SMALL_TYPES.has(tags.building) || area < TINY_AREA ? 0.3 : (area0?.windows ?? 1), canopy ? 0 : shop + 2 * (area0?.style ?? 0), ground.min],
       boxes: decomposeFootprint(rings, { step: o.collisionStep }),
     };
     buildings.push(building);
@@ -1620,16 +1631,19 @@ vec3 cityT = vec3(1.0, 0.0, 0.0);
     float y = P.y - vCityFacade.w; // height above this building's ground floor
 
     // --- Ashlar masonry ---
-    float cy = y / 0.36;
+    float fz0 = floor(vCityFacade.z * 0.5 + 0.01);
+    bool oldStone = fz0 > 0.5 && fz0 < 1.5;
+    float course = oldStone ? 0.44 : 0.36;
+    float cy = y / course;
     float row = floor(cy);
-    float blockLen = 0.55 + 0.4 * cityHash(vec3(row, seed * 17.0, 2.0));
+    float blockLen = oldStone ? 0.6 + 0.75 * cityHash(vec3(row, seed * 17.0, 2.0)) : 0.55 + 0.4 * cityHash(vec3(row, seed * 17.0, 2.0));
     float cu = u / blockLen + cityHash(vec3(row, 5.0, seed));
     vec2 sc = vec2(cu, cy);
     vec2 sf = fract(sc);
     vec2 saa = fwidth(sc) + 1e-4;
     float stoneFade = smoothstep(0.12, 0.4, max(saa.x, saa.y));
-    vec2 jw = vec2(0.007 / blockLen, 0.009 / 0.36);
-    vec2 bw = vec2(0.04 / blockLen, 0.04 / 0.36);
+    vec2 jw = vec2((oldStone ? 0.012 : 0.007) / blockLen, (oldStone ? 0.013 : 0.009) / course);
+    vec2 bw = vec2((oldStone ? 0.07 : 0.04) / blockLen, (oldStone ? 0.07 : 0.04) / course);
     vec2 dmin = min(sf, 1.0 - sf);
     float mortar = max(1.0 - smoothstep(jw.x, jw.x + saa.x, dmin.x), 1.0 - smoothstep(jw.y, jw.y + saa.y, dmin.y));
     vec2 slope = vec2(cityBevel(sf.x, 1.0 - sf.x, jw.x, bw.x), cityBevel(sf.y, 1.0 - sf.y, jw.y, bw.y));
@@ -1638,8 +1652,8 @@ vec3 cityT = vec3(1.0, 0.0, 0.0);
 
     float tone = cityHash(vec3(floor(cu), row, seed * 31.0));
     float patina = cityFbm(vec2(u * 0.15, y * 0.25) + seed * 11.0);
-    vec3 base = diffuseColor.rgb * mix(0.9, 1.04, patina);
-    vec3 stone = base * mix(0.88, 1.08, tone);
+    vec3 base = diffuseColor.rgb * (oldStone ? mix(0.8, 1.02, patina) * vec3(1.0, 0.98, 0.95) : vec3(mix(0.9, 1.04, patina)));
+    vec3 stone = base * (oldStone ? mix(0.8, 1.1, tone) : mix(0.88, 1.08, tone));
     stone = mix(stone, base * vec3(0.72, 0.71, 0.69), mortar);
     diffuseColor.rgb = mix(stone, base * 0.98, stoneFade);
     diffuseColor.rgb *= mix(0.8, 1.0, smoothstep(0.0, 1.3, y)); // street grime
@@ -1649,25 +1663,35 @@ vec3 cityT = vec3(1.0, 0.0, 0.0);
     cityRough = mortar * 0.1;
 
     float density = vCityFacade.y;
-    bool shopFloor = vCityFacade.z > 0.5 && y < uFloorHeight * 1.05;
+    // aFacade.z = shop (0 / 1) + 2 * style: 0 modern, 1 Old City, 2 historic, 3 downtown.
+    float fStyle = floor(vCityFacade.z * 0.5 + 0.01);
+    bool isOld = fStyle > 0.5 && fStyle < 1.5, isHist = fStyle > 1.5 && fStyle < 2.5, isDown = fStyle > 2.5;
+    bool shopFloor = vCityFacade.z - fStyle * 2.0 > 0.5 && y < uFloorHeight * 1.05;
     if (density > 0.0 && shopFloor) {
       // --- Ground-floor shops ---
-      float sb = 4.2;
+      float sb = isOld ? 3.2 : isDown ? 4.8 : 4.2;
       float su = u / sb;
       float sid = floor(su);
       vec2 sp = vec2((fract(su) - 0.5) * sb, y);
       float aam = fwidth(u) + 1e-4;
-      float front = cityBox(vec2(sp.x, sp.y - 1.45), vec2(1.55, 1.15), aam);
-      float surround = cityBox(vec2(sp.x, sp.y - 1.45), vec2(1.7, 1.25), aam) - front;
-      float signBand = cityBox(vec2(sp.x, sp.y - 2.95), vec2(1.75, 0.22), aam);
+      // The opening: a rectangle, or (Old City) a round-arched souk shop.
+      vec2 hsS = isOld ? vec2(1.1, 1.3) : isDown ? vec2(2.0, 1.25) : vec2(1.55, 1.15);
+      vec2 pS = vec2(sp.x, sp.y - (isOld ? 1.3 : 1.45));
+      vec2 qS = abs(pS) - hsS;
+      float dS = length(max(qS, 0.0)) + min(max(qS.x, qS.y), 0.0);
+      if (isOld && pS.y > hsS.y - hsS.x) dS = length(vec2(pS.x, pS.y - (hsS.y - hsS.x))) - hsS.x;
+      float front = 1.0 - smoothstep(-aam, aam, dS);
+      float surround = (1.0 - smoothstep(-aam, aam, dS - (isOld ? 0.2 : 0.15))) - front;
+      float signBand = isOld ? 0.0 : cityBox(vec2(sp.x, sp.y - 2.95), vec2(isDown ? 2.2 : 1.75, isDown ? 0.3 : 0.22), aam);
       float h1 = cityHash(vec3(sid, seed, 4.0));
       vec3 signCol = h1 < 0.25 ? vec3(0.45, 0.06, 0.05) : h1 < 0.5 ? vec3(0.05, 0.16, 0.35) : h1 < 0.7 ? vec3(0.07, 0.25, 0.12) : h1 < 0.85 ? vec3(0.6, 0.45, 0.08) : vec3(0.85, 0.83, 0.78);
       diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.8, surround);
       diffuseColor.rgb = mix(diffuseColor.rgb, signCol, signBand);
       cityBump *= 1.0 - max(front, signBand);
       float shut = step(mix(0.55, 0.12, uNight), cityHash(vec3(sid, seed, 5.0))); // most shops close at night
-      float ridges = 0.8 + 0.2 * step(0.5, fract(sp.y * 12.0));
-      vec3 shutter = vec3(0.42, 0.43, 0.44) * ridges;
+      float ridges = 0.8 + 0.2 * step(0.5, fract((isOld ? sp.x * 5.0 : sp.y * 12.0)));
+      // Old City shops close behind painted steel doors (green, blue, grey); elsewhere roller shutters.
+      vec3 shutter = (isOld ? (h1 < 0.4 ? vec3(0.13, 0.26, 0.17) : h1 < 0.75 ? vec3(0.12, 0.2, 0.3) : vec3(0.33, 0.33, 0.32)) : vec3(0.42, 0.43, 0.44)) * ridges;
       vec3 glass = mix(vec3(0.03, 0.035, 0.04), vec3(0.13, 0.1, 0.07), cityHash(vec3(sid, 2.0, seed)));
       diffuseColor.rgb = mix(diffuseColor.rgb, mix(glass, shutter, shut), front);
       cityWin = front * (1.0 - shut);
@@ -1675,28 +1699,30 @@ vec3 cityT = vec3(1.0, 0.0, 0.0);
       cityLit = cityWin * step(0.4, cityHash(vec3(sid, 6.0, seed)));
     } else if (density > 0.0) {
       // --- Windows ---
-      float bay = mix(4.4, 3.2, density);
+      float bay = isOld ? 5.2 : isHist ? mix(4.2, 3.4, density) : isDown ? 3.5 : mix(4.4, 3.2, density);
       vec2 cell = vec2(u / bay, y / uFloorHeight);
       vec2 id = floor(cell);
       vec2 f = fract(cell) - 0.5;
       vec2 aa = fwidth(cell) + 1e-4;
       float aam = max(aa.x * bay, aa.y * uFloorHeight);
       vec2 pm = vec2(f.x * bay, (f.y + 0.04) * uFloorHeight);
-      vec2 hs = vec2(0.55, 0.8);
-      bool arched = cityHash(vec3(seed, 3.0, 9.0)) > 0.55;
+      vec2 hs = isOld ? vec2(0.36, 0.62) : isHist ? vec2(0.46, 0.98) : isDown ? vec2(0.8, 0.88) : vec2(0.55, 0.8);
+      bool arched = isOld || (isHist && cityHash(vec3(seed, 3.0, 9.0)) > 0.4) || (!isDown && !isHist && cityHash(vec3(seed, 3.0, 9.0)) > 0.55);
       vec2 q = abs(pm) - hs;
       float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
       float springY = hs.y - hs.x;
       if (arched && pm.y > springY) d = length(vec2(pm.x, pm.y - springY)) - hs.x;
-      float present = step(0.1, cityHash(vec3(id, seed * 7.0)));
+      float present = step(isOld ? 0.5 : 0.1, cityHash(vec3(id, seed * 7.0)));
       float opening = (1.0 - smoothstep(-aam, aam, d)) * present;
       float surround = (1.0 - smoothstep(-aam, aam, d - 0.1)) * present - opening;
       float sill = cityBox(vec2(pm.x, pm.y + hs.y + 0.05), vec2(hs.x + 0.12, 0.05), aam) * present;
 
       // Shutters: this building's color, open beside the window or closed over it.
       float sh = cityHash(vec3(seed, 8.0, 1.0));
-      bool hasShutters = sh > 0.4 && !arched;
-      vec3 shutterCol = sh > 0.8 ? vec3(0.1, 0.2, 0.13) : sh > 0.62 ? vec3(0.13, 0.2, 0.28) : vec3(0.22, 0.13, 0.07);
+      bool hasShutters = isHist || (!isOld && !isDown && sh > 0.4 && !arched);
+      vec3 shutterCol = isHist
+        ? (sh > 0.75 ? vec3(0.1, 0.26, 0.16) : sh > 0.5 ? vec3(0.12, 0.25, 0.38) : sh > 0.25 ? vec3(0.1, 0.33, 0.33) : vec3(0.26, 0.15, 0.08))
+        : sh > 0.8 ? vec3(0.1, 0.2, 0.13) : sh > 0.62 ? vec3(0.13, 0.2, 0.28) : vec3(0.22, 0.13, 0.07);
       float louver = 0.75 + 0.25 * step(0.4, fract(pm.y * 14.0));
       float closed = hasShutters ? step(cityHash(vec3(id, seed + 2.0)), mix(0.25, 0.6, uNight)) : 0.0;
       float leaves = hasShutters ? cityBox(vec2(abs(pm.x) - hs.x * 1.5 - 0.12, pm.y), vec2(hs.x * 0.5, hs.y), aam) * present * (1.0 - closed) : 0.0;
@@ -1715,6 +1741,19 @@ vec3 cityT = vec3(1.0, 0.0, 0.0);
       diffuseColor.rgb = mix(diffuseColor.rgb, mix(inOpening, glass, fade), cover);
       cityWin = cover * (1.0 - closed);
       cityBump *= 1.0 - max(opening, leaves);
+      // Historic neighbourhoods: iron balconies under some upper-floor windows (a railing of
+      // thin bars and its shadow on the stone); the Old City: an iron grille over the glass.
+      if (isHist && id.y >= 1.0 && cityHash(vec3(id.x, seed, 21.0)) < 0.35) {
+        vec2 rp = vec2(pm.x, pm.y + hs.y - 0.45);
+        float rail = cityBox(rp, vec2(hs.x + 0.35, 0.45), aam);
+        float bars = max(step(0.82, fract(pm.x * 7.0)), max(1.0 - smoothstep(0.03, 0.05 + aam, abs(rp.y - 0.42)), 1.0 - smoothstep(0.03, 0.05 + aam, abs(rp.y + 0.42))));
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.06, 0.06, 0.06), rail * bars * (1.0 - fade));
+        diffuseColor.rgb *= 1.0 - 0.3 * cityBox(vec2(pm.x, rp.y + 0.55), vec2(hs.x + 0.35, 0.1), aam) * (1.0 - fade);
+      }
+      if (isOld) {
+        float grille = max(step(0.85, fract(pm.x * 5.0)), step(0.85, fract(pm.y * 5.0)));
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.05), opening * grille * (1.0 - fade) * 0.8);
+      }
       float lit = step(1.0 - cityLitRate, cityHash(vec3(id, n.x * 3.0 + n.z * 5.0 + seed * 97.0)));
       cityLit = mix(opening * (1.0 - closed) * lit, avg * cityLitRate * 0.6, fade);
     }

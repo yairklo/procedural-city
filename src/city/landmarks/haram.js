@@ -201,9 +201,10 @@ export function buildHaram(haram, ctx) {
     }
     m.paint(C.lead, 1, 1, STYLE.lead);
     m.cylinder(c.x, c.z, drumR + 0.3, drumR + 0.2, drumTop, domeY, seg, { top: false });
-    // The gold dome, very slightly pointed.
+    // The gold dome: slightly stilted (a short upright base) and slightly pointed.
     m.paint(C.gold, 1, 1, STYLE.gold);
-    revolve(c.x, c.z, domeProfile(drumR + 0.15, domeY, domeH, 0.12, 12), 40);
+    m.cylinder(c.x, c.z, drumR + 0.15, drumR + 0.15, domeY, domeY + 0.9, 40, { top: false });
+    revolve(c.x, c.z, domeProfile(drumR + 0.15, domeY + 0.9, domeH - 0.9, 0.2, 14), 40);
     finial(c.x, domeY + domeH - 0.1, c.z, 1.6, faces[0].ux, faces[0].uz);
     addBox({ minX: c.x - drumR * 0.72, maxX: c.x + drumR * 0.72, minZ: c.z - drumR * 0.72, maxZ: c.z + drumR * 0.72, minY: band, maxY: domeY }, 'building', 'dome-of-the-rock');
     domeBoxes(c.x, c.z, drumR, domeY, domeH, 'dome-of-the-rock');
