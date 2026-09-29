@@ -374,11 +374,24 @@ class LightRail {
     for (let d = 175; d < path.length - 20; d += 350) this.stops.push(d);
     this.group = new THREE.Group();
     this.group.name = 'LightRail';
-    this.mesh = new THREE.InstancedMesh(tramModuleGeometry(), vehicleMaterial(uniforms), modules);
-    this.mesh.name = 'LightRail(tram)';
-    this.mesh.frustumCulled = false;
-    this.mesh.castShadow = true;
-    this.mesh.receiveShadow = true;
+    // Three instanced meshes share one material: the leading cab (white lamps), the trailing cab
+    // (red lamps, turned round) and the passenger modules in between.
+    const paint = vehicleMaterial(uniforms);
+    this.head = new THREE.InstancedMesh(tramCabGeometry(false), paint, 1);
+    this.tail = new THREE.InstancedMesh(tramCabGeometry(true), paint, 1);
+    this.mid = new THREE.InstancedMesh(tramMidGeometry(), paint, Math.max(1, modules - 2));
+    this.head.name = 'LightRail(head)';
+    this.tail.name = 'LightRail(tail)';
+    this.mid.name = 'LightRail(tram)';
+    this.trams = [this.head, this.tail, this.mid];
+    for (const m of this.trams) {
+      m.frustumCulled = false;
+      m.castShadow = true;
+      m.receiveShadow = true;
+    }
+    this.head.count = 1;
+    this.tail.count = modules > 1 ? 1 : 0;
+    this.mid.count = Math.max(0, modules - 2);
     this.rails = new THREE.Mesh(railGeometry(path, terrain), new THREE.MeshStandardMaterial({
       color: 0xa4a8ad, metalness: 0.85, roughness: 0.25,
       // Polished steel shows what it reflects: its own env map at full strength (the scene-wide
@@ -387,7 +400,7 @@ class LightRail {
     }));
     this.rails.name = 'LightRail(rails)';
     this.rails.receiveShadow = true;
-    this.group.add(this.mesh, this.rails);
+    this.group.add(...this.trams, this.rails);
     this._tmp = { m: new THREE.Matrix4(), q: new THREE.Quaternion(), e: new THREE.Euler(0, 0, 0, 'YXZ'), v: new THREE.Vector3(), s: new THREE.Vector3(1, 1, 1) };
     this.boxes = [];
   }
@@ -496,18 +509,20 @@ class LightRail {
 
   render() {
     const t = this._tmp;
+    const last = this.modules - 1;
     (this.poses ?? []).forEach((p, k) => {
-      t.q.setFromEuler(t.e.set(p.pitch, p.yaw, 0));
+      const rear = k === last && last > 0; // the trailing cab faces the other way
+      t.q.setFromEuler(rear ? t.e.set(-p.pitch, p.yaw + Math.PI, 0) : t.e.set(p.pitch, p.yaw, 0));
       t.m.compose(t.v.set(p.x, p.y, p.z), t.q, t.s);
-      this.mesh.setMatrixAt(k, t.m);
+      (k === 0 ? this.head : rear ? this.tail : this.mid).setMatrixAt(rear || k === 0 ? 0 : k - 1, t.m);
     });
-    this.mesh.instanceMatrix.needsUpdate = true;
+    for (const m of this.trams) m.instanceMatrix.needsUpdate = true;
   }
 
   dispose(collision) {
     collision.removeGroup('tram');
-    this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
+    for (const m of this.trams) m.geometry.dispose();
+    this.head.material.dispose();
     this.rails.geometry.dispose();
     this.rails.material.dispose();
   }
@@ -517,67 +532,247 @@ class LightRail {
 // Geometry and materials
 // -------------------------------------------------------------------------------------------------
 
-/** Non-indexed, no UVs, vertex colour + light flag (0 none, 1 headlight, 2 tail light, 3 lit window). */
-function tint(geo, hex, light = 0) {
+/**
+ * Vehicle vertex layout (non-indexed, no UVs), 40 bytes per vertex:
+ *   position, normal, color (vertex albedo, x instance colour on body panels only) and
+ *   aMat: Uint8 x4 = (part, light, roughness * 255, metalness * 255).
+ * part: 0 body paint (takes the instance colour), 1 tyre, 2 glass, 3 lens / lit glass, 4 alloy, 5 trim, 6 plate.
+ * light: 0 none, 1 headlight, 2 tail light, 3 lit window.
+ */
+const KIND = {
+  body: [0, 0.28, 0.6],
+  tyre: [1, 0.9, 0],
+  glass: [2, 0.06, 0.9],
+  lens: [3, 0.12, 0.3],
+  alloy: [4, 0.25, 0.9],
+  trim: [5, 0.7, 0.1],
+  plate: [6, 0.5, 0.1],
+};
+
+export const VEHICLE_ATTRIBUTES = ['position', 'normal', 'color', 'aMat'];
+
+function tint(geo, hex, kind = 'body', light = 0) {
   const g = geo.index ? geo.toNonIndexed() : geo;
   g.deleteAttribute('uv');
   const c = new THREE.Color(hex);
+  const [part, rough, metal] = KIND[kind];
   const n = g.getAttribute('position').count;
-  const col = new Float32Array(n * 3), l = new Float32Array(n).fill(light);
-  for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
+  const col = new Float32Array(n * 3), mat = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    mat[i * 4] = part; mat[i * 4 + 1] = light; mat[i * 4 + 2] = Math.round(rough * 255); mat[i * 4 + 3] = Math.round(metal * 255);
+  }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  g.setAttribute('aLight', new THREE.BufferAttribute(l, 1));
+  g.setAttribute('aMat', new THREE.BufferAttribute(mat, 4));
   return g;
 }
 
-const BODY = 0xffffff, GLASS = 0x1a2026, TYRE = 0x151515;
+const BODY = 0xffffff, GLASS = 0x141a20, TYRE = 0x151515, DARK = 0x18191b, ALLOY = 0xc9ced4, PLATE = 0xf2c20c;
+const TAN15 = Math.tan(Math.PI / 12);
 
-function wheels(len, width) {
+const box = (w, h, d, x, y, z) => new THREE.BoxGeometry(w, h, d).translate(x, y, z);
+
+/**
+ * A side profile [[z, y], ...] (z negative = front) extruded across `width` centred on x, with a
+ * chamfer of `bevel` on every edge. The outline grows by `bevel`, so inset it by that much.
+ */
+function side(pts, width, x = 0, bevel = 0.03) {
+  const shape = new THREE.Shape(pts.map(([z, y]) => new THREE.Vector2(-z, y)));
+  const depth = width - 2 * bevel;
+  return new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: bevel > 0, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 1, curveSegments: 1 })
+    .translate(0, 0, -depth / 2).rotateY(Math.PI / 2).translate(x, 0, 0);
+}
+
+/** A front-view profile [[x, y], ...] extruded along z from z0 to z1. */
+function prism(pts, z0, z1) {
+  return new THREE.ExtrudeGeometry(new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y))), { depth: z1 - z0, bevelEnabled: false, curveSegments: 1 }).translate(0, 0, z0);
+}
+
+/** A slim bar from a to b in the side view ([z, y] points), `t` thick, `w` wide, centred on x. */
+function strip([az, ay], [bz, by], t, w, x) {
+  const dz = bz - az, dy = by - ay, l = Math.hypot(dz, dy) || 1;
+  const nz = (-dy / l) * t / 2, ny = (dz / l) * t / 2;
+  return side([[az - nz, ay - ny], [bz - nz, by - ny], [bz + nz, by + ny], [az + nz, ay + ny]], w, x, 0);
+}
+
+/** Wheel bottom edge of a body profile: an arch of radius r over an axle at (zc, cy), from left to right. */
+function arch(zc, cy, r, steps = 8) {
   const out = [];
-  for (const z of [-len * 0.32, len * 0.32]) for (const x of [-width / 2, width / 2]) out.push(tint(new THREE.CylinderGeometry(0.32, 0.32, 0.22, 10).rotateZ(Math.PI / 2).translate(x, 0.32, z), TYRE));
+  for (let i = 0; i <= steps; i++) {
+    const a = Math.PI - (i / steps) * Math.PI;
+    out.push([zc + r * Math.cos(a), cy + r * Math.sin(a)]);
+  }
   return out;
 }
 
+/**
+ * Two-layer wheel: a rounded rubber tyre (lathe) and, recessed into it, a dark barrel with five alloy
+ * spokes and a hub cap, so the wheel has depth from a metre away. s = +1 / -1 for the right / left side.
+ */
+function wheel(s, cx, z, r = 0.32, w = 0.22) {
+  const cy = r;
+  const tyre = new THREE.LatheGeometry([[r - 0.12, -w / 2], [r - 0.03, -w / 2], [r, -w / 2 + 0.03], [r, w / 2 - 0.03], [r - 0.03, w / 2], [r - 0.12, w / 2]].map(([a, b]) => new THREE.Vector2(a, b)), 14)
+    .rotateZ(Math.PI / 2).translate(s * cx, cy, z);
+  const face = s * (cx + w / 2);
+  const barrel = new THREE.CylinderGeometry(r - 0.1, r - 0.1, 0.03, 12).rotateZ(Math.PI / 2).translate(face - s * 0.05, cy, z);
+  const out = [tint(tyre, TYRE, 'tyre'), tint(barrel, 0x26282b, 'trim')];
+  for (let k = 0; k < 5; k++) out.push(tint(new THREE.BoxGeometry(0.025, r - 0.13, 0.04).translate(0, (r - 0.13) / 2, 0).rotateX((k / 5) * Math.PI * 2).translate(face - s * 0.045, cy, z), ALLOY, 'alloy'));
+  out.push(tint(new THREE.CylinderGeometry(0.055, 0.055, 0.04, 10).rotateZ(Math.PI / 2).translate(face - s * 0.03, cy, z), ALLOY, 'alloy'));
+  return out;
+}
+
+const wheelSet = (cx, zs, r, w) => zs.flatMap((z) => [1, -1].flatMap((s) => wheel(s, cx, z, r, w)));
+
+/** Faceted (hexagonal, tapering forwards) lens, w x h across and d deep, swept back by `sweep`. */
+function lens(x, y, z, w, h, d, sweep = 0) {
+  return new THREE.CylinderGeometry(0.42, 0.5, 1, 6).rotateX(-Math.PI / 2).scale(w, h, d).rotateY(sweep).translate(x, y, z);
+}
+
+/** Rectangular bezel standing proud of a panel, so what it frames reads as recessed. */
+function bezel(w, h, x, y, z, t = 0.03, d = 0.05, hex = 0x8d9297) {
+  return [
+    tint(box(w + 2 * t, t, d, x, y + h / 2 + t / 2, z), hex, 'alloy'), tint(box(w + 2 * t, t, d, x, y - h / 2 - t / 2, z), hex, 'alloy'),
+    tint(box(t, h, d, x - w / 2 - t / 2, y, z), hex, 'alloy'), tint(box(t, h, d, x + w / 2 + t / 2, y, z), hex, 'alloy'),
+  ];
+}
+
+/** Yellow Israeli plate with a dark digit band; `out` = -1 on a front (-z) face, +1 on a rear one. */
+function plate(y, z, out) {
+  return [
+    tint(box(0.52, 0.12, 0.02, 0, y, z), PLATE, 'plate'),
+    tint(box(0.44, 0.06, 0.006, 0, y, z + out * 0.012), 0x141414, 'plate'),
+  ];
+}
+
 /** Hatchback / sedan, 4.3 m, facing -Z. White body parts take the instance colour. */
-function carGeometry() {
-  return mergeGeometries([
-    tint(new THREE.BoxGeometry(1.75, 0.6, 4.3).translate(0, 0.62, 0), BODY),
-    tint(new THREE.BoxGeometry(1.55, 0.55, 2.2).translate(0, 1.18, 0.25), GLASS),
-    tint(new THREE.BoxGeometry(1.6, 0.06, 2.0).translate(0, 1.47, 0.25), BODY),
-    tint(new THREE.BoxGeometry(0.38, 0.12, 0.04).translate(-0.6, 0.72, -2.16), 0xffffff, 1),
-    tint(new THREE.BoxGeometry(0.38, 0.12, 0.04).translate(0.6, 0.72, -2.16), 0xffffff, 1),
-    tint(new THREE.BoxGeometry(0.34, 0.12, 0.04).translate(-0.62, 0.78, 2.16), 0xaa1010, 2),
-    tint(new THREE.BoxGeometry(0.34, 0.12, 0.04).translate(0.62, 0.78, 2.16), 0xaa1010, 2),
-    ...wheels(4.3, 1.7),
-  ], false);
+export function carGeometry() {
+  const P = [
+    [-2.1, 0.32], ...arch(-1.38, 0.32, 0.42), ...arch(1.38, 0.32, 0.42), [2.1, 0.32],
+    [2.1, 0.78], [2.05, 0.92], [1.55, 0.95], [-0.85, 0.9], [-1.98, 0.76], [-2.1, 0.62],
+  ];
+  const parts = [
+    tint(side(P, 1.76), BODY),
+    // dark wheel-arch liners fill the notch through the body between the tyres
+    ...[-1.38, 1.38].map((z) => tint(box(1.3, 0.46, 0.8, 0, 0.55, z), 0x0e0f10, 'trim')),
+    tint(box(1.5, 0.12, 3.6, 0, 0.26, 0), 0x0e0f10, 'trim'),
+    // greenhouse: dark glass volume, body-colour roof slab, black A / B / C pillars
+    tint(side([[-0.92, 0.88], [-0.32, 1.42], [0.92, 1.44], [1.5, 0.93]], 1.46, 0, 0), GLASS, 'glass'),
+    tint(side([[-0.36, 1.41], [0.93, 1.43], [0.93, 1.48], [-0.33, 1.47]], 1.48, 0, 0.015), BODY),
+    tint(strip([-0.92, 0.9], [-0.32, 1.45], 0.07, 0.06, 0.75), DARK, 'trim'), tint(strip([-0.92, 0.9], [-0.32, 1.45], 0.07, 0.06, -0.75), DARK, 'trim'),
+    tint(strip([0.12, 0.93], [0.15, 1.43], 0.08, 0.06, 0.75), DARK, 'trim'), tint(strip([0.12, 0.93], [0.15, 1.43], 0.08, 0.06, -0.75), DARK, 'trim'),
+    tint(strip([0.95, 1.45], [1.52, 0.93], 0.16, 0.06, 0.75), DARK, 'trim'), tint(strip([0.95, 1.45], [1.52, 0.93], 0.16, 0.06, -0.75), DARK, 'trim'),
+    // wing mirrors
+    ...[1, -1].flatMap((s) => [tint(box(0.1, 0.07, 0.17, s * 0.93, 1.0, -0.7), BODY), tint(box(0.1, 0.03, 0.05, s * 0.86, 0.96, -0.66), DARK, 'trim')]),
+    // front: recessed grille and air intake, plate, splitter
+    tint(box(0.9, 0.14, 0.03, 0, 0.55, -2.125), 0x101112, 'trim'),
+    tint(box(0.84, 0.012, 0.02, 0, 0.55, -2.145), 0x3a3c40, 'trim'),
+    ...bezel(0.9, 0.14, 0, 0.55, -2.135),
+    tint(box(1.2, 0.09, 0.03, 0, 0.36, -2.125), 0x101112, 'trim'),
+    tint(box(1.62, 0.04, 0.14, 0, 0.3, -2.07), DARK, 'trim'),
+    ...plate(0.44, -2.17, -1),
+    // faceted headlights in dark housings (light 1)
+    ...[1, -1].flatMap((s) => [tint(box(0.46, 0.17, 0.06, s * 0.62, 0.7, -2.03), DARK, 'trim'), tint(lens(s * 0.62, 0.7, -2.09, 0.38, 0.13, 0.08, s * 0.35), 0xffffff, 'lens', 1)]),
+    // rear: segmented tail lights (light 2), plate, lower valance
+    ...[1, -1].flatMap((s) => [
+      tint(box(0.46, 0.15, 0.03, s * 0.62, 0.72, 2.13), DARK, 'trim'),
+      ...[0.48, 0.62, 0.76].map((x, i) => tint(box(0.12, 0.11, 0.03, s * x, 0.72, 2.15 + i * 0.008), 0xaa1010, 'lens', 2)),
+    ]),
+    tint(box(1.5, 0.08, 0.06, 0, 0.36, 2.12), DARK, 'trim'),
+    ...plate(0.56, 2.17, 1),
+    ...wheelSet(0.77, [-1.38, 1.38], 0.32, 0.22),
+  ];
+  return mergeGeometries(parts, false);
 }
 
-/** Delivery van, 5.4 m. */
-function vanGeometry() {
-  return mergeGeometries([
-    tint(new THREE.BoxGeometry(1.95, 1.9, 4.2).translate(0, 1.3, 0.55), BODY),
-    tint(new THREE.BoxGeometry(1.9, 1.1, 1.3).translate(0, 0.92, -2.05), BODY),
-    tint(new THREE.BoxGeometry(1.8, 0.55, 0.05).translate(0, 1.55, -1.42), GLASS),
-    tint(new THREE.BoxGeometry(0.34, 0.14, 0.04).translate(-0.7, 0.85, -2.71), 0xffffff, 1),
-    tint(new THREE.BoxGeometry(0.34, 0.14, 0.04).translate(0.7, 0.85, -2.71), 0xffffff, 1),
-    tint(new THREE.BoxGeometry(0.2, 0.3, 0.04).translate(-0.85, 0.9, 2.66), 0xaa1010, 2),
-    tint(new THREE.BoxGeometry(0.2, 0.3, 0.04).translate(0.85, 0.9, 2.66), 0xaa1010, 2),
-    ...wheels(5.0, 1.9),
-  ], false);
+/** Delivery van, 5.4 m, facing -Z. */
+export function vanGeometry() {
+  const P = [
+    [-2.7, 0.35], ...arch(-1.6, 0.35, 0.44), ...arch(1.6, 0.35, 0.44), [2.7, 0.35],
+    [2.7, 1.9], [2.62, 1.96], [-1.28, 1.9], [-1.72, 1.08], [-2.5, 0.98], [-2.7, 0.75],
+  ];
+  const parts = [
+    tint(side(P, 1.96), BODY),
+    ...[-1.6, 1.6].map((z) => tint(box(1.4, 0.5, 0.9, 0, 0.6, z), 0x0e0f10, 'trim')),
+    tint(box(1.6, 0.12, 4.6, 0, 0.3, 0), 0x0e0f10, 'trim'),
+    // raked windscreen slab, side windows, B pillar
+    tint(side([[-1.79, 1.1], [-1.35, 1.9], [-1.24, 1.9], [-1.68, 1.1]], 1.78, 0, 0), GLASS, 'glass'),
+    ...[1, -1].flatMap((s) => [tint(box(0.03, 0.55, 1.0, s * 0.985, 1.5, -0.85), GLASS, 'glass'), tint(box(0.05, 0.6, 0.07, s * 0.985, 1.5, -0.28), DARK, 'trim')]),
+    // mirrors
+    ...[1, -1].flatMap((s) => [tint(box(0.1, 0.24, 0.07, s * 1.1, 1.4, -1.4), DARK, 'trim'), tint(box(0.16, 0.04, 0.04, s * 1.03, 1.3, -1.36), DARK, 'trim')]),
+    // front: recessed grille, black bumper, plate
+    tint(box(1.1, 0.2, 0.03, 0, 0.66, -2.72), 0x101112, 'trim'),
+    ...bezel(1.1, 0.2, 0, 0.66, -2.735),
+    tint(box(1.96, 0.18, 0.1, 0, 0.42, -2.72), DARK, 'trim'),
+    ...plate(0.42, -2.79, -1),
+    ...[1, -1].flatMap((s) => [tint(box(0.5, 0.2, 0.06, s * 0.72, 0.92, -2.68), DARK, 'trim'), tint(lens(s * 0.72, 0.92, -2.74, 0.42, 0.15, 0.08, s * 0.3), 0xffffff, 'lens', 1)]),
+    // rear: split doors, tail lights, bumper, plate
+    tint(box(0.02, 1.3, 0.02, 0, 1.2, 2.72), 0x202224, 'trim'),
+    ...[1, -1].flatMap((s) => [tint(box(0.16, 0.42, 0.04, s * 0.86, 0.92, 2.73), 0xaa1010, 'lens', 2), tint(box(0.22, 0.48, 0.03, s * 0.86, 0.92, 2.72), DARK, 'trim')]),
+    tint(box(1.96, 0.16, 0.1, 0, 0.44, 2.72), DARK, 'trim'),
+    ...plate(0.62, 2.78, 1),
+    ...wheelSet(0.86, [-1.6, 1.6], 0.34, 0.24),
+  ];
+  return mergeGeometries(parts, false);
 }
 
-/** One Citadis-style tram module: silver body, dark window band, red accent stripe, 6.6 m. */
-function tramModuleGeometry() {
-  return mergeGeometries([
-    tint(new THREE.BoxGeometry(2.65, 2.3, 6.6).translate(0, 1.55, 0), 0xc9cdd1),
-    tint(new THREE.BoxGeometry(2.68, 0.95, 5.8).translate(0, 2.05, 0), 0x1d252c, 3),
-    tint(new THREE.BoxGeometry(2.68, 0.14, 6.62).translate(0, 1.4, 0), 0xa0161c),
-    tint(new THREE.BoxGeometry(1.8, 0.35, 5.0).translate(0, 2.88, 0), 0x9ea3a8),
-    tint(new THREE.BoxGeometry(0.3, 0.15, 0.04).translate(-0.9, 0.95, -3.31), 0xffffff, 1),
-    tint(new THREE.BoxGeometry(0.3, 0.15, 0.04).translate(0.9, 0.95, -3.31), 0xffffff, 1),
-    tint(new THREE.BoxGeometry(0.3, 0.15, 0.04).translate(-0.9, 0.95, 3.31), 0xaa1010, 2),
-    tint(new THREE.BoxGeometry(0.3, 0.15, 0.04).translate(0.9, 0.95, 3.31), 0xaa1010, 2),
-  ], false);
+const TRAM_BODY = 0xc9cdd1, TRAM_GLASS = 0x1d252c, TRAM_GREY = 0x8f9599;
+const TRAM_PROFILE = [[-1.325, 0.42], [1.325, 0.42], [1.325, 2.42], [1.22, 2.7], [-1.22, 2.7], [-1.325, 2.42]];
+const TRAM_DOOR_Z = [-1.55, 1.55];
+
+/** Glass band + door leaves + frame bars on a module, at the given door / window stations. */
+function tramSides(windows, doors) {
+  const out = [];
+  for (const [z0, z1] of windows) out.push(tint(box(2.67, 0.9, z1 - z0, 0, 2.1, (z0 + z1) / 2), TRAM_GLASS, 'glass', 3));
+  for (const z of doors) {
+    out.push(tint(box(2.675, 2.0, 1.3, 0, 1.55, z), 0x232b31, 'glass', 3));
+    for (const dz of [-0.65, 0, 0.65]) out.push(tint(box(2.69, 2.02, dz ? 0.05 : 0.03, 0, 1.55, z + dz), TRAM_GREY, 'trim'));
+    out.push(tint(box(2.69, 0.05, 1.3, 0, 2.55, z), TRAM_GREY, 'trim'));
+  }
+  return out;
+}
+
+/** Everything a module has behind its cab: silver octagonal shell, red stripe, skirt, roof cowl, bellows. */
+function tramShell(z0, z1, bellowsAt) {
+  const out = [
+    tint(prism(TRAM_PROFILE, z0, z1), TRAM_BODY),
+    tint(box(2.67, 0.12, z1 - z0, 0, 1.4, (z0 + z1) / 2), 0xa0161c),
+    tint(box(2.3, 0.3, z1 - z0 - 0.6, 0, 0.36, (z0 + z1) / 2), 0x202224, 'trim'),
+    tint(box(1.8, 0.22, z1 - z0 - 1.2, 0, 2.8, (z0 + z1) / 2), 0x9ea3a8),
+  ];
+  for (const z of bellowsAt) out.push(tint(prism([[-1.2, 0.55], [1.2, 0.55], [1.2, 2.5], [-1.2, 2.5]], z > 0 ? z1 : z0 - 0.25, z > 0 ? z1 + 0.25 : z0), 0x141618, 'trim'));
+  return out;
+}
+
+/** Middle passenger module, 6.6 m: two double doors per side, glass ribbon between them, bellows both ends. */
+export function tramMidGeometry() {
+  return mergeGeometries([...tramShell(-3.3, 3.3, [-1, 1]), ...tramSides([[-0.9, 0.9], [2.2, 3.1], [-3.1, -2.2]], TRAM_DOOR_Z)], false);
+}
+
+/**
+ * Cab module, 6.6 m, nose towards -Z: vertical bumper apron, then a body leaning back 15 degrees with
+ * a wraparound panoramic windscreen, LED destination sign, faceted lamps. `tail` shows red lamps
+ * instead of white (the trailing cab).
+ */
+export function tramCabGeometry(tail = false) {
+  const zl = (y) => -3.3 + (y - 1.1) * TAN15; // the leaning nose face
+  const inset = 0.1; // side() grows the outline by its bevel
+  const nose = side([[-3.3 + inset / Math.cos(Math.PI / 12), 0.42 + inset], [-3.3 + inset / Math.cos(Math.PI / 12), 1.1], [zl(2.7 - inset) + inset / Math.cos(Math.PI / 12), 2.7 - inset], [-1.1, 2.7 - inset], [-1.1, 0.42 + inset]], 2.66, 0, inset);
+  const glass = (y0, y1, w) => side([[zl(y0) - 0.02, y0], [zl(y1) - 0.02, y1], [zl(y1) + 0.06, y1], [zl(y0) + 0.06, y0]], w, 0, 0);
+  const lamp = (s) => tint(lens(s * 0.85, 0.82, -3.33, 0.42, 0.17, 0.09, s * 0.25), tail ? 0xaa1010 : 0xffffff, 'lens', tail ? 2 : 1);
+  const parts = [
+    tint(nose, TRAM_BODY),
+    ...tramShell(-1.4, 3.3, [1]),
+    tint(box(2.67, 0.12, 2.3, 0, 1.4, -2.15), 0xa0161c),
+    tint(box(2.3, 0.3, 2.6, 0, 0.36, -2.0), 0x202224, 'trim'),
+    tint(box(2.0, 0.16, 0.14, 0, 0.55, -3.33), 0x202224, 'trim'), // crash buffer
+    tint(glass(1.3, 2.52, 2.56), TRAM_GLASS, 'glass'),
+    tint(new THREE.BoxGeometry(1.5, 0.16, 0.05).rotateX(Math.PI / 12).translate(0, 2.6, zl(2.6) - 0.03), 0x4a3408, 'lens', 3),
+    tint(box(2.67, 0.9, 3.2, 0, 2.1, -0.7), TRAM_GLASS, 'glass', 3),
+    ...tramSides([[2.2, 3.1]], [TRAM_DOOR_Z[1]]),
+    ...[1, -1].map(lamp),
+    ...[1, -1].map((s) => tint(box(0.5, 0.22, 0.05, s * 0.85, 0.82, -3.29), 0x202224, 'trim')),
+  ];
+  return mergeGeometries(parts, false);
 }
 
 // Rail profile: the head stands RAIL_HEIGHT above the asphalt (+0.06 m over the terrain) and
@@ -668,21 +863,30 @@ function headlightMaterial(uniforms) {
   });
 }
 
-/** Vehicle paint (vertex colour x instance colour); head / tail lights and tram windows glow at night. */
-function vehicleMaterial(uniforms) {
+/**
+ * Vehicle paint: vertex colour x instance colour on body panels only (aMat.x = 0), roughness / metalness
+ * from the vertex (aMat.zw), and head / tail lights and lit windows glow at night (aMat.y).
+ */
+export function vehicleMaterial(uniforms) {
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.45 });
-  mat.customProgramCacheKey = () => 'vehicle-v1';
+  mat.customProgramCacheKey = () => 'vehicle-v2';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = uniforms.uNight;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aLight;\nvarying float vLight;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vLight = aLight;');
+      .replace('#include <common>', '#include <common>\nattribute vec4 aMat;\nvarying vec3 vMat;')
+      .replace('#include <color_vertex>', `#include <color_vertex>
+#ifdef USE_INSTANCING_COLOR
+  if (aMat.x > 0.5) vColor.xyz = color.xyz; // only the paint takes the instance colour
+#endif`)
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vMat = vec3(aMat.y, aMat.z, aMat.w) / vec3(1.0, 255.0, 255.0);');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uNight;\nvarying float vLight;')
+      .replace('#include <common>', '#include <common>\nuniform float uNight;\nvarying vec3 vMat;')
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = vMat.y;')
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = vMat.z;')
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-if (vLight > 0.5 && vLight < 1.5) totalEmissiveRadiance += vec3(1.0, 0.95, 0.85) * (0.2 + 4.0 * uNight);
-else if (vLight > 1.5 && vLight < 2.5) totalEmissiveRadiance += vec3(1.0, 0.05, 0.03) * (0.3 + 2.5 * uNight);
-else if (vLight > 2.5) totalEmissiveRadiance += vec3(1.0, 0.85, 0.6) * 0.9 * uNight;`);
+if (vMat.x > 0.5 && vMat.x < 1.5) totalEmissiveRadiance += vec3(1.0, 0.95, 0.85) * (0.2 + 4.0 * uNight);
+else if (vMat.x > 1.5 && vMat.x < 2.5) totalEmissiveRadiance += vec3(1.0, 0.05, 0.03) * (0.3 + 2.5 * uNight);
+else if (vMat.x > 2.5) totalEmissiveRadiance += vec3(1.0, 0.85, 0.6) * 0.9 * uNight;`);
   };
   return mat;
 }

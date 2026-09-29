@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { CityCollisionWorld } from '../src/city/CityCollision.js';
 import { RoadNetwork } from '../src/city/RoadNetwork.js';
-import { TrafficSystem, jaffaPath } from '../src/city/TrafficSystem.js';
+import { TrafficSystem, jaffaPath, carGeometry, vanGeometry, tramMidGeometry, tramCabGeometry, VEHICLE_ATTRIBUTES } from '../src/city/TrafficSystem.js';
 
 const uniforms = { uNight: { value: 0 } };
 
@@ -133,4 +133,50 @@ test('light rail: the tram stops for the player on the track', () => {
   const gap = rail.dir > 0 ? head - rail.s : rail.s - head;
   assert.ok(rail.speed < 0.05, `stopped (${rail.speed.toFixed(2)} m/s)`);
   assert.ok(gap > 1 && gap < 12, `just short of the player (${gap.toFixed(1)} m)`);
+});
+
+test('vehicle geometry: packed attributes, sane envelopes, light flags, one instanced mesh per type', () => {
+  // [geometry, max half width, min / max z, max height, max triangles]
+  const cases = [
+    ['car', carGeometry(), 1.05, 4.5, 1.6, 2400],
+    ['van', vanGeometry(), 1.2, 5.7, 2.1, 2400],
+    ['tram mid', tramMidGeometry(), 1.4, 7.2, 3.0, 600],
+    ['tram head', tramCabGeometry(false), 1.4, 7.2, 3.0, 800],
+    ['tram tail', tramCabGeometry(true), 1.4, 7.2, 3.0, 800],
+  ];
+  for (const [name, g, hw, len, h, tris] of cases) {
+    assert.deepEqual(Object.keys(g.attributes).sort(), [...VEHICLE_ATTRIBUTES].sort(), `${name}: packed layout, no uv / aLight`);
+    const mat = g.getAttribute('aMat');
+    assert.ok(mat.array instanceof Uint8Array && mat.itemSize === 4, `${name}: aMat is Uint8 x4`);
+    g.computeBoundingBox();
+    const b = g.boundingBox;
+    assert.ok(b.max.x <= hw && b.min.x >= -hw, `${name}: width ${b.min.x.toFixed(2)}..${b.max.x.toFixed(2)}`);
+    assert.ok(b.max.z - b.min.z <= len && b.max.z - b.min.z > len - 1.6, `${name}: length ${(b.max.z - b.min.z).toFixed(2)}`);
+    assert.ok(b.min.y >= -0.01 && b.max.y <= h, `${name}: height ${b.max.y.toFixed(2)}`);
+    assert.ok(g.getAttribute('position').count / 3 <= tris, `${name}: ${g.getAttribute('position').count / 3} triangles`);
+    for (const a of ['position', 'normal', 'color']) assert.ok(g.getAttribute(a).array.every(Number.isFinite), `${name}: finite ${a}`);
+    const parts = new Set(), lights = new Set();
+    for (let i = 0; i < mat.count; i++) { parts.add(mat.getX(i)); lights.add(mat.getY(i)); }
+    assert.ok(parts.has(0) && parts.has(2), `${name}: paint and glass parts`);
+    assert.ok(lights.size > 1, `${name}: has lamps or lit windows`);
+  }
+  // Wheels are two layers (tyre + recessed alloy), plates are yellow.
+  const parts = new Set(); const m = carGeometry().getAttribute('aMat');
+  for (let i = 0; i < m.count; i++) parts.add(m.getX(i));
+  for (const p of [1, 4, 6]) assert.ok(parts.has(p), `car has part ${p} (tyre / alloy / plate)`);
+  // The trailing cab shows red lamps where the leading one shows white.
+  const lamps = (g) => { const a = g.getAttribute('aMat'); const s = new Set(); for (let i = 0; i < a.count; i++) if (a.getY(i) === 1 || a.getY(i) === 2) s.add(a.getY(i)); return [...s]; };
+  assert.deepEqual(lamps(tramCabGeometry(false)), [1]);
+  assert.deepEqual(lamps(tramCabGeometry(true)), [2]);
+});
+
+test('traffic: cars, vans and the tram still cost at most 8 draw calls', () => {
+  const { network } = town();
+  const sys = new TrafficSystem({ collision: new CityCollisionWorld(), uniforms, options: { seed: 't4', maxVehicles: 10 } });
+  sys.setNetwork(network);
+  sys._buildMeshes();
+  const meshes = [];
+  sys.group.traverse((o) => o.isMesh && meshes.push(o));
+  assert.ok(new Set(meshes).size <= 8, `${new Set(meshes).size} meshes`);
+  assert.equal(sys.rail.trams.length, 3, 'head cab, tail cab, passenger modules');
 });
