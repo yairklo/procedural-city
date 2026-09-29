@@ -16,7 +16,7 @@ npm run build
 Controls: WASD move (camera-relative) · Shift run · Space jump (hold for higher) · jump
 toward a ledge to mantle onto it · **hold Space in the air to glide** (W dive, S climb, A/D
 or mouse to steer) · click for mouse look (or drag), wheel zoom · E debug super-jump ·
-N day/night · C free camera (WASD fly, Q/E down/up, Shift fast, wheel speed) · M mute the
+N day/night · L festival lighting · C free camera (WASD fly, Q/E down/up, Shift fast, wheel speed) · M mute the
 wind · B hide the stats panel · G minimap · P post-processing on/off · R respawn · H hide the controls line.
 
 ## Living city (Phase 4)
@@ -285,6 +285,37 @@ Mount of Olives ridge (`dem_points.json`, SRTM 30 m:
 `node scripts/fetch_elevation.js --mode points --source terrarium --bbox 31.765,35.196,31.798,35.256`).
 Inside the old area the heights are unchanged, and the datum is the same. The coarse
 surroundings mesh has skirts, so steep real terrain at the world edge leaves no cracks.
+
+### Landmarks at night
+
+Each landmark mesh carries a night-lighting profile (`aLight`: the height above its own
+ground, and the profile; `LIGHT` in `geometry.js`), and the landmark shader floodlights it
+the way the real places are lit:
+
+- `sodium`: the Old City walls, the gates, the Citadel and the Temple Mount's retaining
+  walls. Warm yellow uplights at the foot of the walls: bright low, fading with the height,
+  so the walls glow gold over the Hinnom and Kidron valleys.
+- `warm`: the Temple Mount buildings, the Western Wall and the churches, in warm white.
+  Floodlit gold (the Dome of the Rock) blazes.
+- `white`: the Knesset and the Chords Bridge, in cool white.
+- `dark`: the Mount of Olives cemetery stays dark.
+- Festival (the L key), as for the Light Festival and national days: the walls become a
+  projection screen, with blue-and-white bands rising up them, then colour fields sweeping
+  along with twinkling points.
+
+The Chords Bridge light show (`bridgeLights.js`). The real bridge has 14,400 LEDs on 58 of
+its 66 cables and plays clips and messages on them. Here the cables are a pixel screen too:
+across the strings, and along each one, with 248 LEDs per lit string (the eight shortest
+cables stay dark). Programmes of 16 s crossfade into each other:
+
+1. a harp whose strings are plucked in turn;
+2. the flag, with the Star of David outlined across the strings;
+3. a rainbow sweep;
+4. sparks racing up to the pylon;
+5. ripples from the middle;
+6. "ירושלים · JERUSALEM" scrolling across the strings.
+
+The cables are their own mesh: white steel by day, glowing LEDs at night (with bloom).
 
 Around the walls, a few rules keep the generic buildings believable:
 

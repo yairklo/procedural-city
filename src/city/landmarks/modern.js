@@ -15,7 +15,8 @@
 // (and the Menorah) are approximate unless the data says otherwise. Collision: podium, piers,
 // core and stairs of the Knesset; the bridge deck is walkable, its pylon and piers solid.
 
-import { Mesher, STYLE, resample, signedArea } from './geometry.js';
+import { Mesher, STYLE, LIGHT, resample, signedArea } from './geometry.js';
+import { createCableLights } from './bridgeLights.js';
 import { orientedBox } from '../footprint.js';
 import { createKit } from './kit.js';
 
@@ -250,7 +251,7 @@ function buildKnesset(mod, ctx) {
     wings++;
   }
 
-  finish(m, 'Knesset');
+  finish(m, 'Knesset', LIGHT.white);
   const out = { knesset: true, knessetPiers: piers, knessetWings: wings };
 
   // --- the Knesset Menorah ---------------------------------------------------------------------
@@ -418,14 +419,22 @@ function buildChordsBridge(cb, ctx) {
   const pylonSide = Math.sign((pylon.x - pts[pylonI].x) * sp.nx + (pylon.z - pts[pylonI].z) * sp.nz) || 1;
   const n = 66;
   const span = Math.abs(spanEnd - pylonI);
-  m.paint(C.steel, 1, 1, STYLE.metal);
+  // The cables are their own mesh: the LED light show at night (bridgeLights.js).
+  const cables = [];
   for (let k = 0; k < n; k++) {
     const f = k / (n - 1);
     const top = axis(0.42 + 0.56 * f);
     const di = pylonI + spanDir * Math.round(3 + f * (span - 4));
-    const anchor = off(di, pylonSide * (W / 2 - 0.3), 0.1);
-    kit.tube(top, anchor, 0.07, 0.07, 4, { caps: false });
+    cables.push({ top, anchor: off(di, pylonSide * (W / 2 - 0.3), 0.1) });
   }
-  finish(m, 'ChordsBridge');
+  if (ctx.group && ctx.show) {
+    const leds = createCableLights(cables, ctx.uniforms, ctx.show);
+    ctx.group.add(leds.mesh);
+    ctx.materials?.push(leds.material);
+  } else {
+    m.paint(C.steel, 1, 1, STYLE.metal);
+    for (const c of cables) kit.tube(c.top, c.anchor, 0.07, 0.07, 4, { caps: false });
+  }
+  finish(m, 'ChordsBridge', LIGHT.white);
   return { bridge: true, cables: n, bridgeLength: Math.round(L), bridgeClearance: Math.round(H) };
 }

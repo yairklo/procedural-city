@@ -6,8 +6,14 @@
 //            1 = Herodian (drafted margins), 2 = roof / lead, 3 = wood, 4 = dark metal,
 //            5 = foliage, 6 = paving, 7 = plain (openings: flat dark, no pattern),
 //            8 = glazed tiles, 9 = gold leaf, 10 = marble panels
+//   aLight = (height above the local ground m, night lighting profile), see LIGHT: filled in
+//            by geometry(ground, profile); `mesher.light` overrides the profile for the
+//            triangles that follow (null = the mesh's default).
 
 import * as THREE from 'three';
+
+/** Night lighting profiles (materials.js): how a landmark is floodlit. */
+export const LIGHT = Object.freeze({ wash: 0, sodium: 1, white: 2, warm: 3, dark: 4 });
 
 export const STYLE = Object.freeze({ ashlar: 0, herodian: 1, lead: 2, wood: 3, metal: 4, foliage: 5, paving: 6, plain: 7, tile: 8, gold: 9, marble: 10 });
 
@@ -17,6 +23,8 @@ export class Mesher {
     this.nrm = [];
     this.col = [];
     this.stone = [];
+    this.lp = [];
+    this.light = null;
     this.color = [1, 1, 1];
     this.style = [0.55, 1.2, STYLE.ashlar];
   }
@@ -44,6 +52,7 @@ export class Mesher {
       this.nrm.push(...n);
       this.col.push(...this.color);
       this.stone.push(...this.style);
+      this.lp.push(this.light ?? -1);
     }
   }
 
@@ -152,12 +161,23 @@ export class Mesher {
     return this.pos.length === 0;
   }
 
-  geometry() {
+  /**
+   * @param {(x:number, z:number) => number} [ground]  for the floodlight falloff (height above it)
+   * @param {number} [profile]  default night lighting profile (LIGHT)
+   */
+  geometry(ground = null, profile = LIGHT.wash) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute('aStone', new THREE.Float32BufferAttribute(this.stone, 3));
+    const light = new Float32Array(this.lp.length * 2);
+    for (let i = 0; i < this.lp.length; i++) {
+      const x = this.pos[i * 3], y = this.pos[i * 3 + 1], z = this.pos[i * 3 + 2];
+      light[i * 2] = ground ? Math.max(0, y - ground(x, z)) : 0;
+      light[i * 2 + 1] = this.lp[i] >= 0 ? this.lp[i] : profile;
+    }
+    g.setAttribute('aLight', new THREE.Float32BufferAttribute(light, 2));
     g.computeBoundingSphere();
     return g;
   }
