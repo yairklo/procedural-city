@@ -576,6 +576,72 @@
    }
   },
   {
+   "id": "0_3",
+   "i": 0,
+   "j": 3,
+   "bbox": {
+    "south": 31.78,
+    "west": 35.205,
+    "north": 31.785,
+    "east": 35.211
+   },
+   "file": "osm_0_3.json",
+   "bytes": 82617,
+   "fetchedAt": "2026-09-29T06:11:34.931Z",
+   "stats": {
+    "buildings": 182,
+    "roads": 166,
+    "roadAreas": 0,
+    "parks": 13,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "1_3",
+   "i": 1,
+   "j": 3,
+   "bbox": {
+    "south": 31.78,
+    "west": 35.211,
+    "north": 31.785,
+    "east": 35.217
+   },
+   "file": "osm_1_3.json",
+   "bytes": 126179,
+   "fetchedAt": "2026-09-29T06:11:37.899Z",
+   "stats": {
+    "buildings": 223,
+    "roads": 311,
+    "roadAreas": 3,
+    "parks": 6,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "2_3",
+   "i": 2,
+   "j": 3,
+   "bbox": {
+    "south": 31.78,
+    "west": 35.217,
+    "north": 31.785,
+    "east": 35.223
+   },
+   "file": "osm_2_3.json",
+   "bytes": 93702,
+   "fetchedAt": "2026-09-29T06:11:40.837Z",
+   "stats": {
+    "buildings": 205,
+    "roads": 200,
+    "roadAreas": 7,
+    "parks": 5,
+    "trees": 24,
+    "places": 0
+   }
+  },
+  {
    "id": "3_3",
    "i": 3,
    "j": 3,
@@ -682,6 +748,138 @@
     "roadAreas": 0,
     "parks": 0,
     "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "0_4",
+   "i": 0,
+   "j": 4,
+   "bbox": {
+    "south": 31.785,
+    "west": 35.205,
+    "north": 31.79,
+    "east": 35.211
+   },
+   "file": "osm_0_4.json",
+   "bytes": 95336,
+   "fetchedAt": "2026-09-29T06:11:43.744Z",
+   "stats": {
+    "buildings": 177,
+    "roads": 235,
+    "roadAreas": 2,
+    "parks": 7,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "1_4",
+   "i": 1,
+   "j": 4,
+   "bbox": {
+    "south": 31.785,
+    "west": 35.211,
+    "north": 31.79,
+    "east": 35.217
+   },
+   "file": "osm_1_4.json",
+   "bytes": 126662,
+   "fetchedAt": "2026-09-29T06:11:46.479Z",
+   "stats": {
+    "buildings": 366,
+    "roads": 174,
+    "roadAreas": 2,
+    "parks": 8,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "2_4",
+   "i": 2,
+   "j": 4,
+   "bbox": {
+    "south": 31.785,
+    "west": 35.217,
+    "north": 31.79,
+    "east": 35.223
+   },
+   "file": "osm_2_4.json",
+   "bytes": 108692,
+   "fetchedAt": "2026-09-29T06:11:49.084Z",
+   "stats": {
+    "buildings": 304,
+    "roads": 192,
+    "roadAreas": 1,
+    "parks": 8,
+    "trees": 9,
+    "places": 0
+   }
+  },
+  {
+   "id": "3_4",
+   "i": 3,
+   "j": 4,
+   "bbox": {
+    "south": 31.785,
+    "west": 35.223,
+    "north": 31.79,
+    "east": 35.229
+   },
+   "file": "osm_3_4.json",
+   "bytes": 91321,
+   "fetchedAt": "2026-09-29T06:11:51.851Z",
+   "stats": {
+    "buildings": 185,
+    "roads": 220,
+    "roadAreas": 2,
+    "parks": 10,
+    "trees": 4,
+    "places": 0
+   }
+  },
+  {
+   "id": "4_4",
+   "i": 4,
+   "j": 4,
+   "bbox": {
+    "south": 31.785,
+    "west": 35.229,
+    "north": 31.79,
+    "east": 35.235
+   },
+   "file": "osm_4_4.json",
+   "bytes": 62701,
+   "fetchedAt": "2026-09-29T06:11:54.705Z",
+   "stats": {
+    "buildings": 185,
+    "roads": 94,
+    "roadAreas": 0,
+    "parks": 6,
+    "trees": 34,
+    "places": 0
+   }
+  },
+  {
+   "id": "5_4",
+   "i": 5,
+   "j": 4,
+   "bbox": {
+    "south": 31.785,
+    "west": 35.235,
+    "north": 31.79,
+    "east": 35.241
+   },
+   "file": "osm_5_4.json",
+   "bytes": 66454,
+   "fetchedAt": "2026-09-29T06:11:57.319Z",
+   "stats": {
+    "buildings": 247,
+    "roads": 75,
+    "roadAreas": 0,
+    "parks": 2,
+    "trees": 15,
     "places": 0
    }
   },
@@ -954,6 +1152,70 @@
    "nameEn": "at-Tur",
    "lat": 31.7812795,
    "lon": 35.2492953
+  },
+  {
+   "id": "n11935174548",
+   "place": "neighbourhood",
+   "name": "אבו בסל (שערי ירושלים)",
+   "nameEn": "Sha'arei Yerushalayim",
+   "lat": 31.7871979,
+   "lon": 35.2103752
+  },
+  {
+   "id": "n8316380890",
+   "place": "suburb",
+   "name": "מקור ברוך",
+   "nameEn": null,
+   "lat": 31.7889891,
+   "lon": 35.2113527
+  },
+  {
+   "id": "n11915685239",
+   "place": "suburb",
+   "name": "זכרון משה",
+   "nameEn": "Zikhron Moshe",
+   "lat": 31.7867764,
+   "lon": 35.2156336
+  },
+  {
+   "id": "n11935148631",
+   "place": "neighbourhood",
+   "name": "כרם אברהם",
+   "nameEn": "Kerem Avraham",
+   "lat": 31.7890949,
+   "lon": 35.2132712
+  },
+  {
+   "id": "n2081525605",
+   "place": "suburb",
+   "name": "בית ישראל",
+   "nameEn": "Beit Yisroel",
+   "lat": 31.789301,
+   "lon": 35.2227208
+  },
+  {
+   "id": "n2081525617",
+   "place": "suburb",
+   "name": "מאה שערים",
+   "nameEn": "Meah Shearim",
+   "lat": 31.7865608,
+   "lon": 35.2208052
+  },
+  {
+   "id": "n11744963505",
+   "place": "neighbourhood",
+   "name": "בתי אונגרין",
+   "nameEn": "Batei Ungarin",
+   "lat": 31.7870058,
+   "lon": 35.2238925
+  },
+  {
+   "id": "n2031059159",
+   "place": "suburb",
+   "name": "ואדי ג'וז",
+   "nameEn": "Wadi al-Joz",
+   "lat": 31.7899912,
+   "lon": 35.2366923
   }
  ]
 }
