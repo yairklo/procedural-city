@@ -276,6 +276,7 @@ async function loadWorld() {
       const mats = world.materials;
       sitesLayer = buildSites(sites, {
         projection: world.projection, terrain: world.terrain, collision: world.collision, uniforms: world.uniforms, landmarks,
+        show: landmarkLayer?.show, // the Old City's night-lighting clock
         props: { material: mats.props, olive: mats.geometries.olive, cypress: mats.geometries.cypress, awningGeometry: mats.geometries.awning, awningStriped: mats.awningStriped, awningSolid: mats.awningSolid },
       });
       lighting.setupMaterial(sitesLayer.material);

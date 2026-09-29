@@ -13,7 +13,7 @@
 //
 // Geometry goes into the caller's Mesher; trees are returned for instancing.
 
-import { STYLE } from './geometry.js';
+import { STYLE, LIGHT } from './geometry.js';
 import { pointInRings, distanceToEdges } from '../footprint.js';
 
 const hash = (a, b = 0) => {
@@ -57,6 +57,7 @@ export function buildEsplanade(lm, sites, { project, ground, quadBox, m, kit }) 
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (let i = 0; i < ring.length; i += 2) { x0 = Math.min(x0, ring[i]); x1 = Math.max(x1, ring[i]); z0 = Math.min(z0, ring[i + 1]); z1 = Math.max(z1, ring[i + 1]); }
   const C = 4;
+  m.light = LIGHT.dark; // the earth is not floodlit
   for (let x = x0 + C / 2; x < x1; x += C) {
     for (let z = z0 + C / 2; z < z1; z += C) {
       if (!pointInRings([ring], x, z) || distanceToEdges([ring], x, z) < 16) continue;
@@ -79,6 +80,8 @@ export function buildEsplanade(lm, sites, { project, ground, quadBox, m, kit }) 
       }
     }
   }
+
+  m.light = null;
 
   // --- riwaq ---------------------------------------------------------------------------------------------
   const H = 6.6, BAY = 4.2, D = 4;

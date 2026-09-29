@@ -26,9 +26,11 @@
 //
 // One stone mesh per area (market, Old City, west) with the landmark material, a translucent
 // roof mesh, and per-area instanced stall parts (a few draw calls, culled with the area).
+// Night: the stone is floodlit warm white like the Old City (the shared lighting show); the
+// esplanade's earth stays dark.
 
 import * as THREE from 'three';
-import { Mesher, STYLE } from './geometry.js';
+import { Mesher, STYLE, LIGHT } from './geometry.js';
 import { createLandmarkMaterial } from './materials.js';
 import { createKit } from './kit.js';
 import { archOutline, beam } from './hinnom.js';
@@ -79,10 +81,10 @@ function soukKind(goods, h) {
 
 /**
  * @param {object} data  parsed sites.json
- * @param {object} ctx   { projection, terrain, collision, uniforms, landmarks?, props?: { material, olive, cypress, awningGeometry, awningStriped, awningSolid } }
+ * @param {object} ctx   { projection, terrain, collision, uniforms, landmarks?, show?, props?: { material, olive, cypress, awningGeometry, awningStriped, awningSolid } }
  */
-export function buildSites(data, { projection, terrain, collision, uniforms, props = null, landmarks = null }) {
-  const material = createLandmarkMaterial(uniforms);
+export function buildSites(data, { projection, terrain, collision, uniforms, props = null, landmarks = null, show = undefined }) {
+  const material = createLandmarkMaterial(uniforms, show);
   const goodsMaterial = createGoodsMaterial(uniforms);
   const group = new THREE.Group();
   group.name = 'Sites';
@@ -104,9 +106,9 @@ export function buildSites(data, { projection, terrain, collision, uniforms, pro
     const xs = corners.filter((_, i) => i % 2 === 0), zs = corners.filter((_, i) => i % 2 === 1);
     addBox({ minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs), minY, maxY }, kind, ref);
   };
-  const finish = (mesher, name, { cast = true, mat = material } = {}) => {
+  const finish = (mesher, name, { cast = true, mat = material, profile = LIGHT.warm } = {}) => {
     if (mesher.empty) return null;
-    const mesh = new THREE.Mesh(mesher.geometry(), mat);
+    const mesh = new THREE.Mesh(mesher.geometry(ground, profile), mat);
     mesh.name = `Sites(${name})`;
     mesh.castShadow = cast;
     mesh.receiveShadow = true;
