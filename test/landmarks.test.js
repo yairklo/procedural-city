@@ -250,3 +250,49 @@ test('terrain: the DEM reaches Mount Scopus and the Chords Bridge (real hills be
   assert.ok(Math.abs(ASL(terrain.heightAt(c.x, c.z)) - junction.elevation) < 1);
   assert.ok(junction.elevation > 795 && junction.elevation < 815, `junction at ${junction.elevation} m`);
 });
+
+test('night lighting: floodlight profiles per landmark, the Chords Bridge LED screen and its programmes', async () => {
+  const { LIGHT } = await import('../src/city/landmarks/geometry.js');
+  const { programmeAt, PROGRAMMES, PROGRAMME_SECONDS } = await import('../src/city/landmarks/bridgeLights.js');
+  const lm = buildLandmarks(landmarks, { projection, terrain, collision: null, uniforms: { uNight: { value: 1 } } });
+  const profile = (name) => {
+    const a = lm.group.getObjectByName(`Landmark(${name})`).geometry.getAttribute('aLight');
+    return a.getY(0);
+  };
+  assert.equal(profile('CityWalls'), LIGHT.sodium, 'the Old City walls: sodium uplights');
+  assert.equal(profile('TowerOfDavid'), LIGHT.sodium);
+  assert.equal(profile('Knesset'), LIGHT.blue, 'the Knesset is floodlit blue');
+  const kn = lm.group.getObjectByName('Landmark(Knesset)').geometry.getAttribute('aLight');
+  let neon = 0;
+  for (let i = 0; i < kn.count; i++) if (kn.getY(i) === LIGHT.neon) neon++;
+  assert.ok(neon >= 24, 'with a white line of light along its roof edge');
+  assert.equal(profile('Haram'), LIGHT.warm);
+  assert.equal(profile('OliveCemetery'), LIGHT.dark, 'the cemetery is not floodlit');
+  // Heights above the ground feed the uplight falloff: the walls' tops are well above 0.
+  const walls = lm.group.getObjectByName('Landmark(CityWalls)').geometry.getAttribute('aLight');
+  let maxH = 0;
+  for (let i = 0; i < walls.count; i++) maxH = Math.max(maxH, walls.getX(i));
+  assert.ok(maxH > 10, `wall tops ${maxH.toFixed(1)} m above the ground`);
+
+  // The LED screen: 66 cables, 58 of them lit.
+  const leds = lm.group.getObjectByName('Landmark(ChordsBridgeLEDs)');
+  assert.ok(leds, 'LED cables mesh');
+  const cab = leds.geometry.getAttribute('aCable');
+  const lit = new Set(), all = new Set();
+  for (let i = 0; i < cab.count; i++) {
+    all.add(cab.getX(i).toFixed(4));
+    if (cab.getZ(i) > 0.5) lit.add(cab.getX(i).toFixed(4));
+  }
+  assert.equal(all.size, 66);
+  assert.equal(lit.size, 58);
+  assert.ok(lm.materials.length >= 2, 'the LED material is set up with the others');
+
+  // Programmes cycle every PROGRAMME_SECONDS, crossfading in the last two seconds.
+  assert.equal(programmeAt(1).name, 'harp');
+  assert.equal(programmeAt(PROGRAMME_SECONDS + 1).name, 'flag');
+  assert.equal(programmeAt(PROGRAMME_SECONDS * PROGRAMMES.length + 1).name, 'harp');
+  assert.equal(programmeAt(PROGRAMME_SECONDS - 1).fade, 0.5);
+  lm.setFestival(true);
+  assert.equal(lm.festival, true);
+  lm.dispose();
+});

@@ -107,6 +107,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyM') wind.toggleMute();
   if (e.code === 'KeyB') benchHud.toggle();
   if (e.code === 'KeyG') minimap?.toggle();
+  if (e.code === 'KeyL') landmarkLayer?.setFestival?.(!landmarkLayer.festival); // ceremonial lighting on the walls
   if (e.code === 'KeyN') nightTarget = nightTarget > 0.5 ? 0 : 1;
   if (e.code === 'KeyR' && !freeCam.enabled) respawn();
   if (e.code === 'KeyP') post.enabled = !post.enabled;
@@ -247,7 +248,7 @@ async function loadWorld() {
   if (landmarks) {
     try {
       landmarkLayer = buildLandmarks(landmarks, { projection: world.projection, terrain: world.terrain, collision: world.collision, uniforms: world.uniforms });
-      lighting.setupMaterial(landmarkLayer.material);
+      for (const m of landmarkLayer.materials ?? [landmarkLayer.material]) lighting.setupMaterial(m);
       scene.add(landmarkLayer.group);
       console.info('[landmarks]', landmarkLayer.stats);
     } catch (err) {
@@ -259,6 +260,7 @@ async function loadWorld() {
       hinnomLayer = buildHinnom(hinnom, {
         projection: world.projection, terrain: world.terrain, collision: world.collision, uniforms: world.uniforms,
         props: { material: world.materials.props, olive: world.materials.geometries.olive, cypress: world.materials.geometries.cypress },
+        show: landmarkLayer?.show, // same night-lighting clock and festival switch as the Old City
       });
       lighting.setupMaterial(hinnomLayer.material);
       // The groves only cast shadows into the near cascades, like the city's trees.
@@ -431,7 +433,7 @@ function updateHud(dt) {
     (touched ? `<span class="dim">touching</span> ${touched.name ?? touched.address ?? touched.id} · ${touched.heightAboveGround.toFixed(1)} m (${touched.heightSource})\n` : '') +
     (showHelp
       ? `<span class="dim">WASD move · Shift run · Space jump (hold: higher) · hold Space in the air: glide (W dive · S climb · A/D or mouse steer) · ` +
-        `${locked ? 'Esc frees the mouse' : 'click: mouse look'} · wheel zoom · E boost · N night · C free cam (Q/E down/up) · M mute · B stats · P post-fx ${post.enabled ? 'on' : 'off'} · R respawn · H hide</span>\n`
+        `${locked ? 'Esc frees the mouse' : 'click: mouse look'} · wheel zoom · E boost · N night · L ceremonial lights · C free cam (Q/E down/up) · M mute · B stats · P post-fx ${post.enabled ? 'on' : 'off'} · R respawn · H hide</span>\n`
       : `<span class="dim">H: controls</span>\n`) +
     (() => { const w = world.stats(); return `<span class="dim">tiles ${w.levels.near} near · ${w.levels.medium} medium · ${w.levels.far} far · ${w.colliders} colliders${w.loading ? ` · loading ${w.loading}` : ''}</span>\n`; })() +
     `<span class="dim">${world.attribution}</span>`;
@@ -498,6 +500,7 @@ renderer.setAnimationLoop(() => {
     updateMinimap(snap, flying);
   }
   dust.update(camera, timer.elapsedTime, renderer.getPixelRatio());
+  landmarkLayer?.update?.(timer.elapsedTime); // Chords Bridge light show, festival projections
   renderer.info.reset();
   post.render(dt);
   if (world && player) {

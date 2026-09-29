@@ -21,7 +21,7 @@
 // `crest` are moved onto the highest ground within 40 m.
 
 import * as THREE from 'three';
-import { Mesher, STYLE, ringCenter, ringRadius, signedArea } from './geometry.js';
+import { Mesher, STYLE, LIGHT, ringCenter, ringRadius, signedArea } from './geometry.js';
 import { orientedBox, pointInRings } from '../footprint.js';
 import { createKit, hash } from './kit.js';
 
@@ -383,6 +383,10 @@ function graves(cem, ctx, stats) {
   const st = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) st.set([1.6, 2.4, STYLE.ashlar], i * 3);
   geo.setAttribute('aStone', new THREE.Float32BufferAttribute(st, 3));
+  // Not floodlit: the cemetery is dark at night.
+  const lt = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) lt.set([0, LIGHT.dark], i * 2);
+  geo.setAttribute('aLight', new THREE.Float32BufferAttribute(lt, 2));
   const mesh = new THREE.InstancedMesh(geo, material, items.length);
   mesh.name = 'Landmark(OliveCemetery)';
   const M = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), col = new THREE.Color();

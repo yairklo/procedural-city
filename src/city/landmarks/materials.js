@@ -18,30 +18,70 @@
 //   gold      gold leaf (the Dome of the Rock's dome): metallic, with a faint sky reflection
 //             so it reads gold even under the low image-based light
 //   marble    veined white-grey marble panels in thin dark frames (lower walls)
-// At night the stone is washed by warm floodlights (uNight), as the real walls are; the gold
-// and the tiles catch them too.
+// Night lighting (uNight), by the geometry's lighting profile (aLight.y, geometry.js LIGHT):
+//   0 wash     a flat warm wash
+//   1 sodium   the Old City walls and the Citadel: sodium-yellow uplights at the foot of the
+//              wall, bright low and fading with the height above the ground (aLight.x)
+//   2 white    the Knesset: cool white floodlighting
+//   3 warm     the Temple Mount, the Western Wall, churches: warm white uplighting; floodlit
+//              gold glows
+//   4 dark     not floodlit (the Mount of Olives cemetery)
+//   5 blue     the Knesset: deep royal-blue uplighting on the colonnade and the facade (the
+//              light's own colour, not tinted by the pale stone)
+//   6 neon     a line of light that glows on its own (the Knesset's roof edge), whatever the
+//              surface colour
+// Strongly lit surfaces cut through the night haze: the fog is weakened where they glow, so
+// the floodlit walls, the Knesset and the bridge read from across the city.
+// Ceremonial lighting (uFestival, the L key), as on national days: the walls in the national
+// blue and white (broad soft bands rising slowly), alternating with a stately gold light that
+// sweeps slowly along the walls. Gold, warm white and blue only: dignified, not a party.
+
+/**
+ * Fog that glowing surfaces cut through: `totalEmissiveRadiance` (in scope at the end of the
+ * standard material's main) weakens the fog by up to 80%.
+ */
+export const LIT_FOG = /* glsl */ `#ifdef USE_FOG
+  #ifdef FOG_EXP2
+    float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+  #else
+    float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+  #endif
+  fogFactor *= 1.0 - 0.8 * clamp(dot(totalEmissiveRadiance, vec3(0.3, 0.5, 0.2)) * 2.0, 0.0, 1.0);
+  gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
+#endif`;
+
+/** Shared by every landmark material: time and the festival switch (LandmarkLayer.update). */
+export const createShowUniforms = () => ({ uLmTime: { value: 0 }, uFestival: { value: 0 } });
 
 import * as THREE from 'three';
 
-export function createLandmarkMaterial(uniforms) {
+export function createLandmarkMaterial(uniforms, show = createShowUniforms()) {
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 });
-  mat.customProgramCacheKey = () => 'landmark-stone-v2';
+  mat.customProgramCacheKey = () => 'landmark-stone-v4';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = uniforms.uNight;
+    shader.uniforms.uLmTime = show.uLmTime;
+    shader.uniforms.uFestival = show.uFestival;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
 attribute vec3 aStone;
+attribute vec2 aLight;
 varying vec3 vStone;
+varying vec2 vLmLight;
 varying vec3 vLmPos;
 varying vec3 vLmNormal;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
   vStone = aStone;
+  vLmLight = aLight;
   vLmPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
   vLmNormal = normalize(mat3(modelMatrix) * objectNormal);`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
 uniform float uNight;
+uniform float uLmTime;
+uniform float uFestival;
 varying vec3 vStone;
+varying vec2 vLmLight;
 varying vec3 vLmPos;
 varying vec3 vLmNormal;
 float lmHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -153,11 +193,51 @@ float lmStone = 0.0;
     lmStone = 0.8;
   }
 }`)
+      .replace('#include <fog_fragment>', LIT_FOG)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = lmRough;')
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = lmMetal;')
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-  // Warm floodlighting of the stone at night, brighter low on the walls.
-  totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.8, 0.55) * uNight * lmStone * 0.55;
+  // Night floodlighting by profile (see the header).
+  {
+    float prof = floor(vLmLight.y + 0.5);
+    float h = vLmLight.x;
+    vec3 lampCol = vec3(1.0, 0.8, 0.55);
+    float glow = 0.55;
+    if (prof > 0.5 && prof < 1.5) { lampCol = vec3(1.0, 0.64, 0.28); glow = 0.3 + 1.3 * exp(-h / 7.0); }
+    else if (prof > 1.5 && prof < 2.5) { lampCol = vec3(0.9, 0.95, 1.0); glow = 0.5 + 0.9 * exp(-h / 14.0); }
+    else if (prof > 2.5) { lampCol = vec3(1.0, 0.84, 0.62); glow = 0.35 + 1.0 * exp(-h / 10.0); }
+    if (uFestival > 0.001 && prof > 0.5 && prof < 1.5) {
+      // Two programmes, 30 s each, crossfading: the national blue and white in broad soft
+      // bands rising slowly up the walls; then gold, with a band of warm white light moving
+      // slowly along them.
+      float cyc = uLmTime / 30.0;
+      float prog = mod(floor(cyc), 2.0);
+      float xf = smoothstep(0.9, 1.0, fract(cyc)); // 3 s crossfade into the next programme
+      // Blue and white floodlights alternating along the wall in broad sections, drifting slowly.
+      float band = smoothstep(0.25, 0.75, 0.5 + 0.5 * sin(((vLmPos.x - vLmPos.z) / 90.0 - uLmTime * 0.01) * 6.2832));
+      vec3 national = mix(vec3(0.95, 0.96, 1.0), vec3(0.1, 0.3, 1.0), band);
+      float sweep = exp(-pow(fract((vLmPos.x - vLmPos.z) / 400.0 - uLmTime * 0.012) - 0.5, 2.0) * 60.0);
+      vec3 gold = mix(vec3(1.0, 0.7, 0.3), vec3(1.0, 0.93, 0.8) * 1.4, sweep);
+      vec3 fest = prog < 0.5 ? mix(national, gold, xf) : mix(gold, national, xf);
+      lampCol = mix(lampCol, fest * 1.3, uFestival);
+      glow = mix(glow, 1.1, uFestival);
+    }
+    if (prof > 3.5 && prof < 4.5) glow = 0.0;
+    if (prof > 4.5 && prof < 5.5) {
+      // Saturated: the coloured light dominates the stone's own colour.
+      float luma = dot(diffuseColor.rgb, vec3(0.3, 0.55, 0.15));
+      totalEmissiveRadiance += vec3(0.16, 0.24, 1.0) * (0.25 + 0.75 * luma) * (0.9 + 1.6 * exp(-h / 11.0)) * uNight * max(lmStone, 0.4);
+      diffuseColor.rgb *= 1.0 - 0.6 * uNight;
+      glow = 0.0;
+    }
+    if (prof > 5.5) {
+      totalEmissiveRadiance += vec3(1.0, 0.97, 0.9) * 2.6 * uNight;
+      glow = 0.0;
+    }
+    totalEmissiveRadiance += diffuseColor.rgb * lampCol * glow * uNight * (prof < 0.5 ? lmStone : max(lmStone, 0.4));
+    // Floodlit gold (the Dome of the Rock) blazes at night.
+    if (prof > 0.5 && floor(vStone.z + 0.5) == 9.0) totalEmissiveRadiance += diffuseColor.rgb * uNight * 1.3;
+  }
   // Gold: the image-based light is weak (and warm-tinted by day), so add a little of the
   // sky the dome would mirror, stronger toward the top.
   if (floor(vStone.z + 0.5) == 9.0) totalEmissiveRadiance += diffuseColor.rgb * (0.22 + 0.2 * max(normalize(vLmNormal).y, 0.0)) * (1.0 - 0.6 * uNight);`);

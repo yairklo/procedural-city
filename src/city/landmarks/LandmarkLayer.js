@@ -24,8 +24,8 @@
 // (landmarks.json `replaces` -> CityGenerator option excludeBuildings).
 
 import * as THREE from 'three';
-import { Mesher, STYLE, resample, ringCenter, ringRadius, signedArea } from './geometry.js';
-import { createLandmarkMaterial } from './materials.js';
+import { Mesher, STYLE, LIGHT, resample, ringCenter, ringRadius, signedArea } from './geometry.js';
+import { createLandmarkMaterial, createShowUniforms } from './materials.js';
 import { decomposeFootprint, pointInRings, distanceToEdges, orientedBox } from '../footprint.js';
 import { buildHaram } from './haram.js';
 import { buildModern } from './modern.js';
@@ -68,7 +68,9 @@ const hash = (a, b = 0) => {
  * @returns {{ group: THREE.Group, material: THREE.Material, stats: object, dispose(): void }}
  */
 export function buildLandmarks(data, { projection, terrain, collision, uniforms }) {
-  const material = createLandmarkMaterial(uniforms);
+  const show = createShowUniforms(); // time and festival switch for the night lighting
+  const material = createLandmarkMaterial(uniforms, show);
+  const materials = [material];
   const group = new THREE.Group();
   group.name = 'Landmarks';
   const ground = (x, z) => terrain.heightAt(x, z);
@@ -89,9 +91,10 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
     const xs = corners.filter((_, i) => i % 2 === 0), zs = corners.filter((_, i) => i % 2 === 1);
     addBox({ minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs), minY, maxY }, kind, ref);
   };
-  const finish = (mesher, name) => {
+  /** Turns a Mesher into a landmark mesh; `light`: its night lighting profile (LIGHT). */
+  const finish = (mesher, name, light = LIGHT.warm) => {
     if (mesher.empty) return;
-    const mesh = new THREE.Mesh(mesher.geometry(), material);
+    const mesh = new THREE.Mesh(mesher.geometry(ground, light), material);
     mesh.name = `Landmark(${name})`;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -178,7 +181,7 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
       m.wall(bx - nx * 1.5, bz - nz * 1.5, ax - nx * 1.5, az - nz * 1.5, platform.y, platform.y, y1, y1, [-nx, 0, -nz]);
       quadBox([ax, az, bx, bz, bx - nx * 1.5, bz - nz * 1.5, ax - nx * 1.5, az - nz * 1.5], y0, y1, 'wall', 'temple-mount');
     }
-    finish(m, 'TempleMountPlatform');
+    finish(m, 'TempleMountPlatform', LIGHT.sodium);
   }
 
   // --- Western Wall ---------------------------------------------------------------------------
@@ -353,7 +356,7 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
       }
     }
     flush();
-    finish(m, 'PlazaTerraces');
+    finish(m, 'PlazaTerraces', LIGHT.sodium);
   }
 
   // --- Wilson's Arch prayer hall and the stretches mapped as building=wall ----------------------
@@ -659,9 +662,9 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
         addBox({ minX: tx - 3.4, maxX: tx + 3.4, minZ: tz - 3.4, maxZ: tz + 3.4, minY: bottom, maxY: top + 2.5 }, 'wall', g.name);
       }
     }
-    finish(m, g.name);
+    finish(m, g.name, LIGHT.sodium);
   }
-  finish(wallMesh, 'CityWalls');
+  finish(wallMesh, 'CityWalls', LIGHT.sodium);
 
   // --- Tower of David ------------------------------------------------------------------------------
   if (data.citadel) {
@@ -741,7 +744,7 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
       m.cylinder(q.x, q.z, 1.45, 0.02, top + 19.5, top + 23.5, 8, { top: false });
       addBox({ minX: q.x - 2.4, maxX: q.x + 2.4, minZ: q.z - 2.4, maxZ: q.z + 2.4, minY: g0, maxY: top + 23.5 }, 'building', 'citadel-minaret');
     }
-    finish(m, 'TowerOfDavid');
+    finish(m, 'TowerOfDavid', LIGHT.sodium);
   }
 
   // --- Church of the Holy Sepulchre ----------------------------------------------------------------
@@ -790,7 +793,7 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
   }
 
   // --- the Knesset and the Chords Bridge -------------------------------------------------------------
-  if (data.modern) stats.modern = buildModern(data, { project, at, ground, addBox, addFootprint, quadBox, finish });
+  if (data.modern) stats.modern = buildModern(data, { project, at, ground, addBox, addFootprint, quadBox, finish, group, uniforms, show, materials });
 
   // --- the Mount of Olives and Mount Scopus -----------------------------------------------------------
   const addObject = (obj) => {
@@ -805,11 +808,26 @@ export function buildLandmarks(data, { projection, terrain, collision, uniforms 
   return {
     group,
     material,
+    /** Every material the layer made (the stone, the Chords Bridge LEDs): for shadow setup. */
+    materials,
     stats,
+    /** The show uniforms (time, festival), for other landmark layers to share. */
+    show,
+    /** Per frame: drives the Chords Bridge light show and the festival projections. */
+    update(time) {
+      show.uLmTime.value = time;
+    },
+    /** Festival lighting (L key): the walls become a projection screen. */
+    setFestival(on) {
+      show.uFestival.value = on ? 1 : 0;
+    },
+    get festival() {
+      return show.uFestival.value > 0.5;
+    },
     dispose() {
       collision?.removeGroup?.(COLLISION_GROUP);
       group.traverse((o) => o.geometry?.dispose());
-      material.dispose();
+      for (const m of materials) m.dispose();
       group.removeFromParent();
     },
   };
