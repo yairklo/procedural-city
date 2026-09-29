@@ -349,6 +349,97 @@ Without network access, `node scripts/fetch_landmarks.js --from-tiles` rebuilds 
 from the tile files. Tiles have no nodes and no land-use areas, so in that mode all
 minarets are approximate and the only groves are the mapped gardens.
 
+### The Hinnom Valley, Mishkenot Sha'ananim and Yemin Moshe
+
+`scripts/fetch_hinnom.js` writes `public/data/hinnom.json`, built by
+`src/city/landmarks/hinnom.js`:
+
+- Mishkenot Sha'ananim: the long one-storey rubble row with pointed arches, a crenellated
+  parapet and the iron-column veranda.
+- The Montefiore Windmill: stone tower, cap and lattice sails.
+- Sultan's Pool:
+  - retaining walls and the amphitheatre (stage and raked seating), on two floors that are
+    terrain patches below the dam road;
+  - the Ottoman sabil on the dam.
+- The valley itself:
+  - dry-stone terraces along the real contours, and olive groves;
+  - bare rock scarps with rock-cut tomb doorways on the south side (Ketef Hinnom, Akeldama).
+- Low-rise areas:
+  - Yemin Moshe: 2-3 storeys, with tile roofs on its large row-house blocks;
+  - Mount Zion and Abu Tor: approximate boxes.
+
+### Markets, the Old City's fabric and the remaining landmarks
+
+`scripts/fetch_sites.js` downloads the Old City (the same 3×3 boxes as the landmarks) and small
+areas around Mahane Yehuda, the King David Hotel / YMCA and Mamilla. It writes
+`public/data/sites.json`, which `src/city/landmarks/sites.js` builds:
+
+- **Mahane Yehuda.**
+  - The covered block between Mahane Yehuda Street and Etz Haim Street is cut into shop blocks
+    by the mapped fruit alleys (HaEgoz, HaTut, HaShaked…). Every face is a row of open shops:
+    shelves of goods, roll-up shutter boxes and signs.
+  - Etz Haim Street runs under a vault of translucent sheets on steel ribs, with pendant lamps
+    and photo banners. The alleys have corrugated roofs with skylights. Where the street's east
+    side has no mapped building, a row of shops closes it.
+  - About 400 stalls stand in front of the shops on both streets and in the alleys
+    (`stalls.js`, all instanced). They carry:
+    - crates of produce tilted toward the aisle;
+    - burlap sacks of nuts, and spice cones in steel bowls;
+    - bread, halva and butchers' counters;
+    - price cards and hanging goods.
+  - The open street has awnings. The Iraqi market and the Georgian courtyard have tables,
+    umbrellas and stalls.
+  - The market streets are 2-3 storeys with a shop on every ground floor.
+  - Two unnamed 30-storey towers are mapped over the Etz Haim site, which is tagged as under
+    construction. They are listed in `excludes`, with the reason.
+- **The Old City's souks.**
+  - Chosen by name: David Street, the three Crusader markets, al-Qattanin, Khan al-Zeit and
+    the covered Cardo get stone pointed barrel vaults with ribs and light wells.
+  - All of them, including Christian Quarter Road, Aftimos, the Muristan, Chain Street and
+    al-Wad, get stalls selling what that street sells: souvenirs, spices, fabrics, meat and food.
+  - The open Cardo has its Byzantine columns.
+- **The Old City's density.** OSM doesn't map every Old City building, and the gaps showed as
+  paved squares. `infill` fills the unmapped gaps inside the walls with 2-3 storey stone
+  houses: small arched windows, parapets and, on some, plastered domes. About 1,100 boxes, on
+  a 3 m grid. A gap is filled only if it is:
+  - inside the walls (a crossing test against the wall lines);
+  - off every street (with a margin), square, garden, courtyard, excavation and landmark;
+  - within 8 m of a mapped building;
+  - part of a patch smaller than ~900 m² (larger open ground is a yard or a garden).
+- **The Temple Mount esplanade** (`esplanade.js`):
+  - the northern and eastern parts are bare earth with ~400 olives, cypresses and pines, not
+    paving;
+  - the riwaq porticoes stand 4 m in front of the buildings' inner facades on the west and
+    north sides, found in the data;
+  - the Dome of the Rock's inscription band runs along the top of the octagon, and its dome
+    is slightly stilted and pointed;
+  - the edge buildings have few windows.
+- **Landmarks.**
+  - The Hurva Synagogue: tall cube, arched windows, corner turrets, drum and white dome. The
+    mapped `height=3` was wrong.
+  - The YMCA: the 46 m tower in the middle of the front facing King David Street, an arcade,
+    and two domes.
+  - The King David Hotel: pink stone, rows of windows, an arched ground floor, a cornice.
+  - Mamilla: planters with olives and café umbrellas; shops on every ground floor.
+- **Facade styles** (the shader's `aFacade.z` carries shop + 2 × style; `facade` on a
+  low-rise area):
+  - *Old City:* larger, rougher stones; few small arched windows with grilles and no
+    shutters; round-arched souk shops behind green and blue steel doors; no awnings.
+  - *Historic*, for the 19th and early 20th century neighbourhoods and the villages
+    (circles around their place nodes, approximate; 2-3 storeys): tall windows with painted
+    shutters and iron balconies. This covers Mea Shearim, Nahlaot, Zikhron Moshe, the Russian
+    Compound, Musrara, the German Colony, the market, Yemin Moshe, Silwan and At-Tur.
+  - *Downtown*, for the Jaffa Road / Ben Yehuda / King George triangle (approximate box):
+    large unshuttered windows and bigger shopfronts.
+  - *Modern:* everything else.
+- **Crowds.** The pedestrian system has busy zones (the market, the souks, Mamilla and
+  downtown). In one, the density is up to 3.2× higher and most new walkers start inside the
+  zone.
+- **Fixes.**
+  - Free-standing footprints under 45 m² (booths, the guard posts in the Damascus Gate plaza)
+    are one storey with no shopfront.
+  - No awning is hung where the pavement drops well below the shop floor.
+
 ### Tiled world (what the game loads)
 
 `public/data/tiles/`:
@@ -366,6 +457,8 @@ minarets are approximate and the only groves are the mapped gardens.
 
 - One projection for everything: `createProjection(manifest.worldBBox)`, with a fixed origin at
   the world centre. Adding tiles never moves anything.
+- All 40 cells of the world (8 × 5) now have a tile, so the legacy file no longer contributes
+  anything (Mahane Yehuda, the city centre and the Mount of Olives ridge come from tiles).
 - Every grid cell gets its content from, in order: its manifest tile; else the legacy
   city-centre file (`jerusalem_data.json`), keeping only the features whose centroid (roads:
   midpoint) falls in that cell; else nothing (terrain only). Legacy features in cells that

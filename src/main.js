@@ -16,6 +16,7 @@ import { PedestrianSystem } from './city/PedestrianSystem.js';
 import { RiggedPedestrians } from './city/RiggedPedestrians.js';
 import { buildLandmarks } from './city/landmarks/LandmarkLayer.js';
 import { buildHinnom } from './city/landmarks/hinnom.js';
+import { buildSites } from './city/landmarks/sites.js';
 import { TrafficSystem } from './city/TrafficSystem.js';
 import { WindAudio } from './audio/WindAudio.js';
 import { BenchmarkHUD } from './ui/BenchmarkHUD.js';
@@ -189,6 +190,8 @@ const getJson = async (url, { optional = false } = {}) => {
 let landmarkLayer = null;
 /** @type {ReturnType<typeof buildHinnom> | null} */
 let hinnomLayer = null;
+/** @type {ReturnType<typeof buildSites> | null} */
+let sitesLayer = null;
 
 /**
  * Unmapped-height buildings: single storey, no shopfronts on the Temple Mount (small
@@ -197,15 +200,16 @@ let hinnomLayer = null;
  */
 function lowRiseAreas(landmarks) {
   const out = [];
-  if (landmarks.templeMount) out.push({ ring: landmarks.templeMount.outer[0], floorsMin: 1, floorsMax: 1, shops: false });
-  if (landmarks.oldCity) out.push(landmarks.oldCity);
+  // Few windows: the madrasas and porticoes on the edges of the esplanade are mostly stone.
+  if (landmarks.templeMount) out.push({ ring: landmarks.templeMount.outer[0], floorsMin: 1, floorsMax: 1, shops: false, windows: 0.3 });
+  if (landmarks.oldCity) out.push({ ...landmarks.oldCity, facade: 'old' });
   // Villages around the Old City (Silwan, the Kidron, At-Tur): 2-3 storey houses.
   for (const a of landmarks.lowRise ?? []) out.push(a);
   return out;
 }
 
 async function loadWorld() {
-  const [manifest, dem, legacy, landmarks, hinnom] = await Promise.all([
+  const [manifest, dem, legacy, landmarks, hinnom, sites] = await Promise.all([
     getJson(`${DATA}tiles/manifest.json`),
     getJson(`${DATA}tiles/dem_points.json`),
     // The old city-centre file stays as a "legacy" source until tiles cover it.
@@ -214,6 +218,9 @@ async function loadWorld() {
     getJson(`${DATA}landmarks.json`, { optional: true }),
     // The Hinnom Valley: Mishkenot Sha'ananim, the windmill, Sultan's Pool, terraces.
     getJson(`${DATA}hinnom.json`, { optional: true }),
+    // Markets and remaining landmarks: Mahane Yehuda, the Old City souks and infill, the Hurva,
+    // the YMCA, the King David Hotel, Mamilla.
+    getJson(`${DATA}sites.json`, { optional: true }),
   ]);
   // Landmark terrain patches (the esplanade, the plaza below the Western Wall) go into the
   // elevation data itself, so the main thread and the cell worker build the same terrain.
@@ -232,9 +239,9 @@ async function loadWorld() {
     manifest, dem, legacy, loadTile: (file) => getJson(`${DATA}tiles/${file}`), backend,
     // Buildings the landmark models replace are not generated from the map data.
     // Inside the Old City, buildings without a mapped height are low-rise (2-3 storeys).
-    options: landmarks || hinnom ? { city: {
-      excludeBuildings: [...(landmarks?.replaces ?? []), ...(hinnom?.replaces ?? [])],
-      lowRiseAreas: [...(landmarks ? lowRiseAreas(landmarks) : []), ...(hinnom?.lowRise ?? [])],
+    options: landmarks || hinnom || sites ? { city: {
+      excludeBuildings: [...(landmarks?.replaces ?? []), ...(hinnom?.replaces ?? []), ...(sites?.replaces ?? [])],
+      lowRiseAreas: [...(landmarks ? lowRiseAreas(landmarks) : []), ...(hinnom?.lowRise ?? []), ...(sites?.lowRise ?? [])],
     } } : {},
   });
   scene.add(world.group);
@@ -264,6 +271,24 @@ async function loadWorld() {
       console.error('[hinnom] could not be built:', err);
     }
   }
+  if (sites) {
+    try {
+      const mats = world.materials;
+      sitesLayer = buildSites(sites, {
+        projection: world.projection, terrain: world.terrain, collision: world.collision, uniforms: world.uniforms, landmarks,
+        show: landmarkLayer?.show, // the Old City's night-lighting clock
+        props: { material: mats.props, olive: mats.geometries.olive, cypress: mats.geometries.cypress, awningGeometry: mats.geometries.awning, awningStriped: mats.awningStriped, awningSolid: mats.awningSolid },
+      });
+      lighting.setupMaterial(sitesLayer.material);
+      lighting.setupMaterial(sitesLayer.goodsMaterial);
+      // Stall goods and trees cast shadows into the near cascades only.
+      sitesLayer.group.traverse((o) => o.isInstancedMesh && o.castShadow && lighting.nearShadowsOnly(o));
+      scene.add(sitesLayer.group);
+      console.info('[sites]', sitesLayer.stats);
+    } catch (err) {
+      console.error('[sites] could not be built:', err);
+    }
+  }
   lighting.setupMaterial(world.groundMaterial);
   lighting.setupMaterial(world.outerMaterial);
   for (const m of world.materials.list) lighting.setupMaterial(m);
@@ -285,6 +310,8 @@ async function loadWorld() {
 
   // Street life: pedestrians on the sidewalks, cars / vans and the light rail on the roads.
   pedestrians = new PedestrianSystem({ collision: world.collision });
+  // Crowds in the markets, the souks, Mamilla and downtown.
+  if (sitesLayer?.busyZones) pedestrians.setBusyZones(sitesLayer.busyZones);
   traffic = new TrafficSystem({ collision: world.collision, uniforms: world.uniforms, environment: scene.environment });
   traffic.setPoolMaterial(world.materials.pool);
   lighting.setupMaterial(pedestrians.mesh.material);
@@ -308,6 +335,7 @@ async function loadWorld() {
   window.debug = {
     landmarks: landmarkLayer,
     hinnom: hinnomLayer,
+    sites: sitesLayer,
     THREE, camera, playerCamera, player, proxy, character, scene, renderer, lighting, post, world, pedestrians, traffic, freeCam, wind,
     setNight: (v) => { night = nightTarget = v; applyLook(v); },
   };

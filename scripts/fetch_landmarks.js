@@ -60,9 +60,9 @@ export const ELEVATION = Object.freeze({ esplanade: 740.5, plaza: 740.5 - 19, up
 // node; only the City of David ridge has a small landuse=residential area; Ras al-Amud and
 // At-Tur have none), so these are approximate boxes (lat, lon), flagged as such in the data.
 export const LOW_RISE_AREAS = Object.freeze([
-  { name: 'Silwan and the City of David', approximate: true, floorsMin: 2, floorsMax: 3,
+  { name: 'Silwan and the City of David', approximate: true, floorsMin: 2, floorsMax: 3, facade: 'historic',
     ring: [31.7748, 35.2328, 31.7748, 35.2445, 31.7650, 35.2445, 31.7650, 35.2328] },
-  { name: 'Kidron Valley and the Mount of Olives slope (At-Tur, Ras al-Amud)', approximate: true, floorsMin: 2, floorsMax: 3,
+  { name: 'Kidron Valley and the Mount of Olives slope (At-Tur, Ras al-Amud)', approximate: true, floorsMin: 2, floorsMax: 3, facade: 'historic',
     ring: [31.7840, 35.2378, 31.7840, 35.2530, 31.7650, 35.2530, 31.7650, 35.2445, 31.7748, 35.2445, 31.7748, 35.2378] },
 ]);
 

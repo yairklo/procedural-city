@@ -33,6 +33,7 @@ export const DEFAULT_PEDESTRIAN_OPTIONS = Object.freeze({
   fleeRadius: 4,
   fleeTime: 3,
   fleeSpeedFactor: 2,
+  busyCap: 340, // most agents in a busy zone (a market) instead of maxAgents
   seed: 'pedestrians',
 });
 
@@ -72,7 +73,7 @@ export class PedestrianSystem {
     this.groups = [];
     this.time = 0;
     this.visible = 0;
-    this.mesh = createPedestrianMesh(this.o.maxAgents);
+    this.mesh = createPedestrianMesh(Math.max(this.o.maxAgents, this.o.busyCap));
     this._m = new THREE.Matrix4();
     this._q = new THREE.Quaternion();
     this._v = new THREE.Vector3();
@@ -119,10 +120,31 @@ export class PedestrianSystem {
       return !far;
     });
     if (this.network) {
-      const want = Math.min(o.maxAgents, Math.round(this._walkableLengthNear(center) * o.density));
-      for (let tries = 0; tries < 8 && this.agents.length < want; tries++) this._spawnGroup(center, this.agents.length === 0 ? 0 : o.radius * 0.35);
+      const busy = this._busyAt(center.x, center.z);
+      const cap = busy ? Math.max(o.maxAgents, o.busyCap) : o.maxAgents;
+      const want = Math.min(cap, Math.round(this._walkableLengthNear(center) * o.density * (busy ? busy.factor : 1)));
+      for (let tries = 0; tries < 8 && this.agents.length < want; tries++) {
+        // In a busy zone most groups start inside it (anywhere, not just at the fringe).
+        if (busy && this.rng.chance(0.75)) this._spawnGroup(busy, 0, Math.min(busy.r, o.radius), cap);
+        else this._spawnGroup(center, this.agents.length === 0 ? 0 : o.radius * 0.35, o.radius, cap);
+      }
     }
     for (const g of this.groups) this._updateGroup(g, dt, threat);
+  }
+
+  /**
+   * Busy zones (markets, souks, downtown): [{ x, z, r, factor }]. With the camera inside one,
+   * the target density is `factor` times higher (up to busyCap) and most new groups start
+   * inside the zone.
+   */
+  setBusyZones(zones) {
+    this.busy = zones ?? [];
+  }
+
+  _busyAt(x, z) {
+    let best = null;
+    for (const b of this.busy ?? []) if (Math.hypot(x - b.x, z - b.z) < b.r && (!best || b.factor > best.factor)) best = b;
+    return best;
   }
 
   _walkableLengthNear(center) {
@@ -138,14 +160,14 @@ export class PedestrianSystem {
     return len;
   }
 
-  _spawnGroup(center, rMin) {
+  _spawnGroup(center, rMin, rMax = this.o.radius, cap = this.o.maxAgents) {
     const o = this.o, rng = this.rng;
-    const edge = this.network.randomEdge(rng, { filter: null, x: center.x, z: center.z, rMin, rMax: o.radius, tries: 30 });
+    const edge = this.network.randomEdge(rng, { filter: null, x: center.x, z: center.z, rMin, rMax, tries: 30 });
     if (!edge || !isWalkable(edge)) return;
     const r = rng.next();
     const kind = r > o.groupShare ? 'solo' : rng.chance(o.pairShare) ? 'pair' : 'cluster';
     const size = kind === 'solo' ? 1 : kind === 'pair' ? 2 : 2 + (rng.chance(0.5) ? 1 : 0);
-    if (this.agents.length + size > o.maxAgents) return;
+    if (this.agents.length + size > cap) return;
 
     const paved = PAVED.has(edge.road.highway);
     const hw = edge.road.width / 2;
