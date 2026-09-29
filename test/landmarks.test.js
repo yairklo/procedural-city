@@ -242,7 +242,11 @@ test('terrain: the DEM reaches Mount Scopus and the Chords Bridge (real hills be
   const at = (lat, lon) => { const q = projection.project(lat, lon); return ASL(terrain.heightAt(q.x, q.z)); };
   assert.ok(at(31.7929, 35.2432) > 815, `Mount Scopus ${at(31.7929, 35.2432).toFixed(0)} m`);
   assert.ok(at(31.7784, 35.2446) > 795, `Mount of Olives ${at(31.7784, 35.2446).toFixed(0)} m`);
-  // The junction under the Chords Bridge is a road cut (terrain patch), not the SRTM hump.
-  const c = projection.project(31.7887, 35.2027);
-  assert.ok(Math.abs(ASL(terrain.heightAt(c.x, c.z)) - 813) < 1);
+  // The junction under the Chords Bridge is a flat road level (terrain patch) under the middle
+  // of the real deck, at the DEM's road level there (~805 m), not the bus station's hump.
+  const junction = landmarks.patches.find((q) => q.name === 'Chords Bridge junction');
+  const deck = landmarks.modern.chordsBridge.deck, k = Math.floor(deck.length / 4) * 2;
+  const c = projection.project(deck[k], deck[k + 1]);
+  assert.ok(Math.abs(ASL(terrain.heightAt(c.x, c.z)) - junction.elevation) < 1);
+  assert.ok(junction.elevation > 795 && junction.elevation < 815, `junction at ${junction.elevation} m`);
 });

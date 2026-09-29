@@ -200,8 +200,9 @@ Sepulchre. It also has `haram`, the buildings on the Temple Mount esplanade
 - The Dome of the Chain: open rings of columns, a tiled drum and the dome.
 - The eight small domes: open column pavilions, or closed square and octagonal buildings.
 - Four minarets: the square Mamluk towers, and the round Ottoman shaft at Bab al-Asbat.
-  Where OSM has no minaret node, the minaret stands at an approximate position next to its
-  gate, flagged `approximate`.
+  The Fakhriyya and Bab al-Silsila minarets stand on their mapped OSM nodes. Bab
+  al-Ghawanima and Bab al-Asbat are not mapped, so they stand at approximate positions next
+  to their gates, flagged `approximate`.
 - Groves: grass and olive trees in the mapped gardens and groves. The mapped trees
   themselves are planted by the city.
 
@@ -226,20 +227,24 @@ arcades, windows, domes, finials, tubes).
   - the office wing next to it (a relation with courtyards), low and built into the slope,
     with window bands.
 - The Chords Bridge:
-  - a 400 m curved deck with a tram lane and rails, glass-railed walkways and a white box
-    girder on slender piers;
+  - a 270 m curved deck with a tram lane and rails, glass-railed walkways and a white box
+    girder on slender piers. The deck line is the centre line between the two mapped
+    light-rail tracks on the bridge (w75517167, w255019640), chained end to end;
   - the deck rises 7 m over the junction and meets the street at both ends, and it is
     walkable end to end (1 m collision pieces);
   - the 118 m pylon leans 24 degrees back from the span and tapers, with a slight bow;
   - 66 cables fan from its upper half to the deck edge, and the curve of the deck twists them
     into a harp.
 
-  SRTM measures the surface with buildings (the Central Bus Station), so the junction under
-  the bridge is a lowered terrain patch at 813 m, like the Western Wall plaza.
+  The junction under the bridge is a flat terrain patch at road level, like the Western Wall
+  plaza. Its level is the median of the DEM under the middle of the deck (805.4 m), so the
+  Central Bus Station's hump in SRTM, just east of the bridge, doesn't reach the roads below.
+  The bridge lies just west of the tiled world, so no streets are drawn around it.
 - The Mount of Olives:
-  - the Jewish cemetery: ~29,000 limestone slabs in rows along the contours, long axis down
-    the slope toward the Temple Mount. They form one instanced mesh that receives shadows
-    but casts none, and they skip the mapped buildings on the slope;
+  - the Jewish cemetery: ~28,000 limestone slabs in rows along the contours, long axis down
+    the slope toward the Temple Mount, inside the mapped cemetery outline (w30913757). They
+    form one instanced mesh that receives shadows but casts none, and they skip the mapped
+    buildings and the roads and paths through the cemetery (`olives.cemetery.exclude`);
   - the Church of Mary Magdalene with seven gilded onion domes;
   - the Church of All Nations, with its portico, gold mosaic pediment and twelve domes;
   - Absalom's Tomb (cube, drum and concave "hat") and the Tomb of Zechariah (pyramid);
@@ -248,12 +253,32 @@ arcades, windows, domes, finials, tubes).
 - Mount Scopus: the Hebrew University tower with campus blocks, and Augusta Victoria (the
   church and its bell tower).
 
-The Knesset, Mary Magdalene, All Nations and the two tombs have their outlines from the
-map. The bridge line, the pylon, the Menorah, the cemetery outline and the ridge towers are
-approximate positions (`approximate: true`). Ridge towers are placed on the highest ground
-within 40 m, and the campus blocks are procedural. When the OSM API is reachable, the full
-`node scripts/fetch_landmarks.js` also downloads small areas around each landmark
-(`EXTRA_BBOXES`) and takes mapped geometry by name where it exists.
+The full `node scripts/fetch_landmarks.js` downloads small areas around each landmark
+(`EXTRA_BBOXES`) and takes mapped geometry by name or structure. It also reads the buildings in
+the tile files, so the cemetery's `exclude` list and the replaced ids see every mapped building.
+`--save-raw <file>` keeps the downloaded OSM data, and `--raw <file>` re-extracts from it
+without network access.
+
+- From the map: the Knesset outline and its office wing (the building multipolygon
+  r6183664, with its courtyards), the Knesset Menorah (a node), the bridge deck, the
+  cemetery outline, Mary Magdalene, All Nations and the two tombs.
+- The ridge models at mapped positions:
+  - the Russian bell tower (the 64 m bell tower in the Convent of the Ascension);
+  - the Chapel of the Ascension;
+  - the Seven Arches Hotel (its buildings' centroid);
+  - the Hebrew University tower (Har Hatzofim Tower);
+  - the Lutheran Church of the Ascension at Augusta Victoria.
+
+  Their generic OSM buildings are replaced, including the Augusta Victoria courtyard building
+  that the church stands in.
+- Still approximate (`approximate: true`):
+  - the bridge's pylon: not mapped. It stands where the straighter Herzl end of the deck meets
+    the curve, on the inside;
+  - the junction patch.
+
+  Approximate ridge towers (only in `--from-tiles` data) are placed on the highest ground
+  within 40 m. Mount Scopus is north of the tiled world, so the campus blocks around the tower
+  are procedural.
 
 The terrain now extends beyond the tiles, to Mount Scopus, the Chords Bridge and the
 Mount of Olives ridge (`dem_points.json`, SRTM 30 m:
@@ -272,8 +297,11 @@ Around the walls, a few rules keep the generic buildings believable:
   without windows. Churches, mosques and synagogues are one tall volume with few windows
   and no shops. (`buildingClass` in `CityGenerator.js`.)
 - Silwan and the City of David, and the Kidron Valley with the Mount of Olives slope, are
-  low-rise areas (2-3 storeys). Their outlines are approximate boxes (`lowRise` in
-  landmarks.json, flagged `approximate`).
+  low-rise areas (2-3 storeys). OSM has no outlines for these villages: Silwan is only a
+  place node, and just the City of David ridge has a small residential area. So the outlines
+  are approximate boxes (`lowRise` in landmarks.json, flagged `approximate`).
+- The tiles now reach the Mount of Olives ridge (columns i = 6-7: At-Tur, Ras al-Amud, the
+  ridge road), fetched with `node scripts/fetch_tiles.js --tiles 6_0,...,7_4 --source osm-api`.
 
 Without network access, `node scripts/fetch_landmarks.js --from-tiles` rebuilds `haram`
 from the tile files. Tiles have no nodes and no land-use areas, so in that mode all

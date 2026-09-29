@@ -180,6 +180,50 @@
    }
   },
   {
+   "id": "6_0",
+   "i": 6,
+   "j": 0,
+   "bbox": {
+    "south": 31.765,
+    "west": 35.241,
+    "north": 31.77,
+    "east": 35.247
+   },
+   "file": "osm_6_0.json",
+   "bytes": 56038,
+   "fetchedAt": "2026-09-29T05:44:17.178Z",
+   "stats": {
+    "buildings": 284,
+    "roads": 47,
+    "roadAreas": 0,
+    "parks": 1,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "7_0",
+   "i": 7,
+   "j": 0,
+   "bbox": {
+    "south": 31.765,
+    "west": 35.247,
+    "north": 31.77,
+    "east": 35.253
+   },
+   "file": "osm_7_0.json",
+   "bytes": 54897,
+   "fetchedAt": "2026-09-29T05:44:29.659Z",
+   "stats": {
+    "buildings": 232,
+    "roads": 62,
+    "roadAreas": 0,
+    "parks": 1,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
    "id": "0_1",
    "i": 0,
    "j": 1,
@@ -308,6 +352,50 @@
     "roadAreas": 0,
     "parks": 11,
     "trees": 18,
+    "places": 0
+   }
+  },
+  {
+   "id": "6_1",
+   "i": 6,
+   "j": 1,
+   "bbox": {
+    "south": 31.77,
+    "west": 35.241,
+    "north": 31.775,
+    "east": 35.247
+   },
+   "file": "osm_6_1.json",
+   "bytes": 54112,
+   "fetchedAt": "2026-09-29T05:44:19.816Z",
+   "stats": {
+    "buildings": 230,
+    "roads": 74,
+    "roadAreas": 0,
+    "parks": 2,
+    "trees": 1,
+    "places": 0
+   }
+  },
+  {
+   "id": "7_1",
+   "i": 7,
+   "j": 1,
+   "bbox": {
+    "south": 31.77,
+    "west": 35.247,
+    "north": 31.775,
+    "east": 35.253
+   },
+   "file": "osm_7_1.json",
+   "bytes": 59278,
+   "fetchedAt": "2026-09-29T05:44:32.828Z",
+   "stats": {
+    "buildings": 270,
+    "roads": 62,
+    "roadAreas": 0,
+    "parks": 0,
+    "trees": 0,
     "places": 0
    }
   },
@@ -444,6 +532,50 @@
    }
   },
   {
+   "id": "6_2",
+   "i": 6,
+   "j": 2,
+   "bbox": {
+    "south": 31.775,
+    "west": 35.241,
+    "north": 31.78,
+    "east": 35.247
+   },
+   "file": "osm_6_2.json",
+   "bytes": 50018,
+   "fetchedAt": "2026-09-29T05:44:22.161Z",
+   "stats": {
+    "buildings": 148,
+    "roads": 82,
+    "roadAreas": 2,
+    "parks": 7,
+    "trees": 35,
+    "places": 0
+   }
+  },
+  {
+   "id": "7_2",
+   "i": 7,
+   "j": 2,
+   "bbox": {
+    "south": 31.775,
+    "west": 35.247,
+    "north": 31.78,
+    "east": 35.253
+   },
+   "file": "osm_7_2.json",
+   "bytes": 64706,
+   "fetchedAt": "2026-09-29T05:44:35.616Z",
+   "stats": {
+    "buildings": 294,
+    "roads": 55,
+    "roadAreas": 0,
+    "parks": 0,
+    "trees": 58,
+    "places": 0
+   }
+  },
+  {
    "id": "3_3",
    "i": 3,
    "j": 3,
@@ -506,6 +638,94 @@
     "roadAreas": 4,
     "parks": 23,
     "trees": 196,
+    "places": 0
+   }
+  },
+  {
+   "id": "6_3",
+   "i": 6,
+   "j": 3,
+   "bbox": {
+    "south": 31.78,
+    "west": 35.241,
+    "north": 31.785,
+    "east": 35.247
+   },
+   "file": "osm_6_3.json",
+   "bytes": 39722,
+   "fetchedAt": "2026-09-29T05:44:24.478Z",
+   "stats": {
+    "buildings": 108,
+    "roads": 67,
+    "roadAreas": 2,
+    "parks": 2,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "7_3",
+   "i": 7,
+   "j": 3,
+   "bbox": {
+    "south": 31.78,
+    "west": 35.247,
+    "north": 31.785,
+    "east": 35.253
+   },
+   "file": "osm_7_3.json",
+   "bytes": 79739,
+   "fetchedAt": "2026-09-29T05:44:38.131Z",
+   "stats": {
+    "buildings": 425,
+    "roads": 50,
+    "roadAreas": 0,
+    "parks": 0,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "6_4",
+   "i": 6,
+   "j": 4,
+   "bbox": {
+    "south": 31.785,
+    "west": 35.241,
+    "north": 31.79,
+    "east": 35.247
+   },
+   "file": "osm_6_4.json",
+   "bytes": 34067,
+   "fetchedAt": "2026-09-29T05:44:26.800Z",
+   "stats": {
+    "buildings": 70,
+    "roads": 93,
+    "roadAreas": 0,
+    "parks": 4,
+    "trees": 0,
+    "places": 0
+   }
+  },
+  {
+   "id": "7_4",
+   "i": 7,
+   "j": 4,
+   "bbox": {
+    "south": 31.785,
+    "west": 35.247,
+    "north": 31.79,
+    "east": 35.253
+   },
+   "file": "osm_7_4.json",
+   "bytes": 15599,
+   "fetchedAt": "2026-09-29T05:44:40.825Z",
+   "stats": {
+    "buildings": 32,
+    "roads": 42,
+    "roadAreas": 0,
+    "parks": 1,
+    "trees": 0,
     "places": 0
    }
   }
@@ -718,6 +938,22 @@
    "nameEn": "Muslim Quarter",
    "lat": 31.7813443,
    "lon": 35.2340681
+  },
+  {
+   "id": "n3791268444",
+   "place": "suburb",
+   "name": "ראס אל-עמוד",
+   "nameEn": "Ras al-Amud",
+   "lat": 31.7702277,
+   "lon": 35.2439167
+  },
+  {
+   "id": "n2031059192",
+   "place": "suburb",
+   "name": "א-טור",
+   "nameEn": "at-Tur",
+   "lat": 31.7812795,
+   "lon": 35.2492953
   }
  ]
 }
